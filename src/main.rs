@@ -147,7 +147,7 @@ async fn serve() {
     }
     *gateway_keys.lock().unwrap() = cfg0.keys.clone();
     let admin_state = Arc::new(admin::AdminState {
-        pool,
+        pool: std::sync::Arc::clone(&pool),
         config: std::sync::Mutex::new(cfg0),
         relay: relay.clone(),
         auth_flows,
