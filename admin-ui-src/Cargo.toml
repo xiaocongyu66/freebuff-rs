@@ -1,0 +1,19 @@
+[package]
+name = "freebuff-admin-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+lumen-blocks = { path = "/tmp/lumen-blocks/blocks", package = "lumen-blocks" }
+lucide-dioxus = { version = "2.45", features = ["all-icons"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+gloo-net = "0.6"
+gloo-timers = "0.4.0"
+wasm-bindgen-futures = "0.4.78"
+
+[profile.dev]
+opt-level = 1

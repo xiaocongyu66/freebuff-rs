@@ -4,3 +4,4 @@ usage.sqlite*
 freebuff_tokens.txt
 freebuff_admin.json
 logs/
+admin-ui-src/target

@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@source "/tmp/freebuff-ui/src/**/*.rs";
+@source "/tmp/lumen-blocks/blocks/src/**/*.rs";
+
+/* ── 管控单色板 ───────────────────────────────────────────
+   paper 冷纸白 / ink 墨蓝结构色 / line 发丝线
+   alive 深信号绿 / down 深红 — 语义色只用于状态 ── */
+@theme {
+    --font-sans: -apple-system, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-data: "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+
+    --color-paper: #f4f4f2;
+    --color-ink: #1c2b3a;
+    --color-line: #d9d7d2;
+    --color-alive: #177245;
+    --color-down: #b3261e;
+
+    --radius-sm: 0.25rem;
+    --radius-md: 0.375rem;
+    --radius-lg: 0.5rem;
+    --radius-xl: 0.625rem;
+
+    /* lumen 组件依赖的语义映射 */
+    --color-background: var(--color-paper);
+    --color-foreground: var(--color-ink);
+    --color-card: #ffffff;
+    --color-card-foreground: var(--color-ink);
+    --color-popover: #ffffff;
+    --color-popover-foreground: var(--color-ink);
+    --color-primary: var(--color-ink);
+    --color-primary-foreground: var(--color-paper);
+    --color-secondary: #ecebe7;
+    --color-secondary-foreground: var(--color-ink);
+    --color-muted: #ecebe7;
+    --color-muted-foreground: #6b7280;
+    --color-accent: #ecebe7;
+    --color-accent-foreground: var(--color-ink);
+    --color-destructive: var(--color-down);
+    --color-destructive-foreground: var(--color-paper);
+    --color-border: var(--color-line);
+    --color-input: var(--color-line);
+    --color-ring: var(--color-ink);
+    --color-sidebar: var(--color-paper);
+    --color-sidebar-foreground: var(--color-ink);
+    --color-sidebar-border: var(--color-line);
+    --color-sidebar-ring: var(--color-ink);
+    --color-chart-1: var(--color-alive);
+    --color-chart-2: var(--color-ink);
+    --color-chart-3: var(--color-down);
+    --color-chart-4: #6b7280;
+    --color-chart-5: #ecebe7;
+}
+
+body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+}
+
+.font-data {
+    font-family: var(--font-data);
+}

@@ -1,0 +1,15 @@
+[application]
+name = "freebuff-admin"
+
+[web.app]
+title = "Freebuff Console"
+
+[web.watcher]
+reload_html = true
+
+[web.resource]
+style = []
+dev = {}
+
+[[web.proxy]]
+backend = "http://127.0.0.1:8787"

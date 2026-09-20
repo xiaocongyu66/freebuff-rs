@@ -13,14 +13,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - name: cargo build --release
+      - name: install dioxus-cli (预编译, 秒级)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: dioxus-cli
+      - name: build web (wasm release + tailwind)
+        run: |
+          cd admin-ui-src
+          npx --yes @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css
+          dx build --platform web --release
+          find target/dx -name public -type d | head -1
+      - name: assemble admin-ui
+        run: |
+          PUB=$(find admin-ui-src/target/dx -name public -type d | head -1)
+          mkdir -p admin-ui
+          cp -r "$PUB"/* admin-ui/
+          # tailwind: 用编译产物覆盖 assets 引用
+          mkdir -p admin-ui/assets
+          cp admin-ui-src/assets/tailwind.out.css admin-ui/assets/tailwind.css
+          # 预压缩 (fallback 自实现, 优先 .gz)
+          find admin-ui -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' \) -exec gzip -9 -kf {} \;
+      - name: build rust 主程序
         run: cargo build --release --bin freebuff-rs
       - name: package
         run: |
-          mkdir -p pkg/admin-ui
+          mkdir -p pkg
           cp target/release/freebuff-rs pkg/
-          cp -r admin-ui/* pkg/admin-ui/ 2>/dev/null || true
+          cp -r admin-ui pkg/
           tar czf freebuff-rs-linux-arm64.tar.gz -C pkg .
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
