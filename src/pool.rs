@@ -176,7 +176,9 @@ impl Pool {
     pub fn all_sessions(&self) -> Vec<(String, String, String)> {
         let m = self.sessions.lock().unwrap();
         m.iter()
-            .map(|((t, mo), s)| (t.clone(), mo.clone(), s.instance_id.clone()))
+            .filter_map(|(k, s)| {
+                k.split_once(':').map(|(t, mo)| (t.to_string(), mo.to_string(), s.instance_id.clone()))
+            })
             .collect()
     }
 
