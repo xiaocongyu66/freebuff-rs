@@ -165,7 +165,8 @@ pub async fn execute_chat(
                     // 耗尽/限流(429) → 删 session 重建 → 重试一次
                     // glm 例外: reward 池对会话重置不敏感, 固定会话即可 (重建反而打乱 rhythm)
                     if status == 429 {
-                        // 广告波熔断 30 分钟 (上游已拒, 空转只会加剧)
+                        // 账号级耗尽: pick 跳过 30min + 广告波熔断 (上游已拒, 空转只会加剧)
+                        pool.note_account_exhausted(&token);
                         let _ = upstream::mark_exhausted(&token);
                     }
                     if status == 429 && attempt <= 2 && !session_model.contains("glm") {

@@ -86,6 +86,14 @@ pub fn parse_accounts(tokens_env: &str, accounts_json: &str) -> Vec<Account> {
 }
 
 impl Pool {
+    /// 账号级耗尽标记 (30 分钟)
+    pub fn note_account_exhausted(&self, token: &str) {
+        self.model_exhausted
+            .lock()
+            .unwrap()
+            .insert((token.to_string(), "__account__".to_string()), upstream::now_ms() + 30 * 60 * 1000);
+    }
+
     /// 设置账号别名 (两渠道通用)
     pub fn set_alias(&self, token_head: &str, alias: &str) -> bool {
         let mut accs = self.accounts.lock().unwrap();
@@ -113,6 +121,15 @@ impl Pool {
         match m.get(&(token.to_string(), model.to_string())) {
             Some(until) => upstream::now_ms() >= *until,
             None => true,
+        }
+    }
+
+    /// 账号级耗尽熔断 (session 429 标记, 30min) — pick 跳过
+    pub fn is_exhausted(&self, token: &str) -> bool {
+        let m = self.model_exhausted.lock().unwrap();
+        match m.get(&(token.to_string(), "__account__".to_string())) {
+            Some(until) => upstream::now_ms() < *until,
+            None => false,
         }
     }
 
@@ -267,7 +284,7 @@ impl Pool {
 
         if let Some(model) = session_model {
             for acct in &use_pool {
-                if self.in_cooldown(&acct.token) || !self.model_has_quota(&acct.token, model) {
+                if self.in_cooldown(&acct.token) || self.is_exhausted(&acct.token) || !self.model_has_quota(&acct.token, model) {
                     continue;
                 }
                 if self.cached_session(&acct.token, model).is_some() {
@@ -279,7 +296,7 @@ impl Pool {
         for k in 0..use_pool.len() {
             let acct = &use_pool[(start + k) % use_pool.len()];
             let quota_ok = session_model.map(|m| self.model_has_quota(&acct.token, m)).unwrap_or(true);
-            if !self.in_cooldown(&acct.token) && quota_ok {
+            if !self.in_cooldown(&acct.token) && quota_ok && !self.is_exhausted(&acct.token) {
                 return Some(acct.clone());
             }
         }
