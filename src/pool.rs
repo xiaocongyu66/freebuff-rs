@@ -137,12 +137,13 @@ impl Pool {
         if avail.is_empty() {
             return None;
         }
+        // 请求的本来就在可用集 → 不降级 (先判这个, 否则同家族 find 会返回自己→假降级噪音)
+        if avail.iter().any(|m| m == requested) {
+            return None;
+        }
         let fam = requested.split('/').next().unwrap_or("").to_string();
         if let Some(m) = avail.iter().find(|m| m.starts_with(&format!("{fam}/"))) {
             return Some(m.clone());
-        }
-        if avail.iter().any(|m| m == requested) {
-            return None; // 请求的本来就可用
         }
         avail.first().cloned()
     }
