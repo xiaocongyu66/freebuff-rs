@@ -49,46 +49,65 @@ pub fn router(state: AppState) -> Router {
         .fallback(admin_ui_fallback)
 }
 
-/// SPA 静态托管: 命中文件返回文件, 未命中返回 index.html (客户端路由)。
+/// 内嵌管理台产物 (编译期): 单二进制自带 web — 替换一个文件即完成全部更新。
+/// embedded/admin-ui 由 CI 构建时刷新 (dx build + tailwind + gzip), 仓库内保留最近版本供本地 cargo build。
+static EMBEDDED_UI: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/embedded/admin-ui");
+
+fn mime_of(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" => "application/javascript; charset=utf-8",
+        "wasm" => "application/wasm",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
+fn embedded_response(path: &str) -> Option<Response> {
+    // .gz 产物直接下发 (content-encoding: gzip)
+    let gz = EMBEDDED_UI.get_file(&format!("{path}.gz"));
+    if let Some(f) = gz.or_else(|| EMBEDDED_UI.get_file(path)) {
+        let is_gz = gz.is_some();
+        let mime = mime_of(path);
+        let mut b = Response::builder().status(200).header("content-type", mime);
+        if is_gz {
+            b = b.header("content-encoding", "gzip").header("cache-control", "public, max-age=3600");
+        }
+        return Some(b.body(axum::body::Body::from(f.contents().to_vec())).unwrap());
+    }
+    None
+}
+
+/// SPA 静态托管: 外挂 admin-ui/ 优先 (热替换), 否则内嵌产物; 未命中返回 index.html (客户端路由)。
 async fn admin_ui_fallback(uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let safe = path.replace("..", "");
-    let candidates = [
-        crate::storage::path("admin-ui").join(&safe),
-        std::path::PathBuf::from("admin-ui/index.html"),
-    ];
-    for c in candidates {
-        if c.is_file() {
-            if let Ok(bytes) = tokio::fs::read(&c).await {
-                let mime = match c.extension().and_then(|e| e.to_str()) {
-                    Some("html") => "text/html; charset=utf-8",
-                    Some("css") => "text/css; charset=utf-8",
-                    Some("js") => "application/javascript; charset=utf-8",
-                    Some("wasm") => "application/wasm",
-                    Some("png") => "image/png",
-                    Some("svg") => "image/svg+xml",
-                    _ => "application/octet-stream",
-                };
-                // 预压缩 .gz 优先 (部署时生成)
-                let gz_path = c.with_extension(&format!("{}.gz", c.extension().and_then(|e| e.to_str()).unwrap_or("")));
-                let gz_path = std::path::PathBuf::from(format!("{}.gz", c.display()));
-                if gz_path.is_file() {
-                    if let Ok(gz) = tokio::fs::read(&gz_path).await {
-                        return Response::builder()
-                            .status(200)
-                            .header("content-type", mime)
-                            .header("content-encoding", "gzip")
-                            .body(axum::body::Body::from(gz))
-                            .unwrap();
-                    }
-                }
-                return Response::builder()
-                    .status(200)
-                    .header("content-type", mime)
-                    .body(axum::body::Body::from(bytes))
-                    .unwrap();
+    let asset = if safe.is_empty() { "index.html" } else { &safe };
+    // 1) 外挂热替换目录
+    let ext = crate::storage::path("admin-ui").join(asset);
+    if ext.is_file() {
+        let mime = mime_of(asset);
+        let gz = std::path::PathBuf::from(format!("{}.gz", ext.display()));
+        if gz.is_file() {
+            if let Ok(g) = tokio::fs::read(&gz).await {
+                return Response::builder().status(200).header("content-type", mime)
+                    .header("content-encoding", "gzip").body(axum::body::Body::from(g)).unwrap();
             }
         }
+        if let Ok(bytes) = tokio::fs::read(&ext).await {
+            return Response::builder().status(200).header("content-type", mime)
+                .body(axum::body::Body::from(bytes)).unwrap();
+        }
+    }
+    // 2) 内嵌产物
+    if let Some(r) = embedded_response(asset) {
+        return r;
+    }
+    // 3) SPA 路由兜底: index.html
+    if let Some(r) = embedded_response("index.html") {
+        return r;
     }
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
