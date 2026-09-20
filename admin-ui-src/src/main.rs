@@ -19,6 +19,10 @@ enum Route {
     Docs {},
     #[route("/usage")]
     Usage {},
+    #[route("/logs")]
+    Logs {},
+    #[route("/playground")]
+    Playground {},
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +78,8 @@ fn ConsoleLayout() -> Element {
                         NavTab { to: Route::Keys {}, label: "API Key" }
                         NavTab { to: Route::Docs {}, label: "接入" }
                         NavTab { to: Route::Usage {}, label: "用量" }
+                        NavTab { to: Route::Playground {}, label: "测试" }
+                        NavTab { to: Route::Logs {}, label: "日志" }
                     }
                     div { class: "ml-auto flex items-center gap-2",
                         span { class: "h-2 w-2 rounded-full bg-alive" }
@@ -844,6 +850,7 @@ fn open_new_tab(url: &str) {
 #[component]
 fn AccountRow(d: Value, mut probe: Signal<Option<Value>>, mut probing: Signal<Option<String>>, on_changed: EventHandler<Value>) -> Element {
     let mut acc_confirm_open = use_signal(|| false);
+    let mut rename_open = use_signal(|| false);
     let head = d["token"].as_str().unwrap_or("").to_string();
     let head_query = head.trim_end_matches("...").to_string();
     let is_probing = probing() == Some(head_query.clone());
@@ -878,6 +885,15 @@ fn AccountRow(d: Value, mut probe: Signal<Option<Value>>, mut probing: Signal<Op
                         let hd = head_del.clone();
                         spawn(async move {
                             let _ = api_send("DELETE", &format!("/admin/accounts/{hd}"), None).await;
+                            on_changed.call(Value::Null);
+                        });
+                    } }
+                RenameDialog { open: rename_open, title: "账号命名".to_string(), initial: d["alias"].as_str().unwrap_or("").to_string(),
+                    on_save: move |name: String| {
+                        let hd = head_del.clone();
+                        spawn(async move {
+                            let _ = api_send("PATCH", &format!("/admin/accounts/{hd}/alias"),
+                                Some(serde_json::json!({"name": name}))).await;
                             on_changed.call(Value::Null);
                         });
                     } }
@@ -1049,19 +1065,82 @@ fn ConfirmDeleteDialog(
 }
 
 #[component]
+/// 通用改名弹窗: 输入名字 → on_save (空名 = 清除别名)
+#[component]
+fn RenameDialog(
+    mut open: Signal<bool>,
+    title: String,
+    initial: String,
+    on_save: EventHandler<String>,
+) -> Element {
+    let mut name = use_signal(String::new);
+    let mut inited = use_signal(|| false);
+    if !open() {
+        inited.set(false);
+        return rsx! {};
+    }
+    if !inited() {
+        name.set(initial.clone());
+        inited.set(true);
+    }
+    rsx! {
+        div { class: "fixed inset-0 z-40 flex items-center justify-center bg-ink/45 p-4",
+            div { class: "w-full max-w-sm border border-line bg-white",
+                div { class: "border-b border-line px-4 py-3",
+                    span { class: "text-sm font-semibold text-ink", {title} }
+                }
+                div { class: "px-4 py-4",
+                    input {
+                        class: "h-9 w-full border border-line px-3 text-sm text-ink placeholder:text-ink/30 focus:border-ink focus:outline-none",
+                        placeholder: "输入名字 (清空 = 恢复显示 token)",
+                        value: name(),
+                        oninput: move |e| name.set(e.value()),
+                    }
+                    div { class: "mt-4 flex justify-end gap-2",
+                        Button { variant: ButtonVariant::Outline, class: "h-9 rounded-sm",
+                            on_click: move |_| open.set(false),
+                            "取消" }
+                        Button { variant: ButtonVariant::Primary, class: "h-9 rounded-sm",
+                            on_click: move |_| {
+                                open.set(false);
+                                on_save.call(name().trim().to_string());
+                            },
+                            "保存" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
     let key = k["key"].as_str().unwrap_or("").to_string();
     let masked = mask_key(&key);
     let mut confirm_open = use_signal(|| false);
+    let enabled = k["enabled"].as_bool().unwrap_or(true);
     rsx! {
         Row {
             left: rsx! {
                 div { class: "min-w-0",
-                    div { class: "text-sm text-ink", {k["name"].as_str().unwrap_or("").to_string()} }
+                    div { class: "flex items-center gap-2",
+                        AliveDot { alive: Some(enabled) }
+                        span { class: "text-sm text-ink", {k["name"].as_str().unwrap_or("").to_string()} }
+                        span { class: "text-[10px] text-ink/40", {if enabled { "启用" } else { "已禁用" }} }
+                    }
                     Data { text: masked, class: "text-xs text-ink/50".to_string() }
                 }
             },
             right: rsx! {
+                Button { variant: ButtonVariant::Ghost, class: "h-7 rounded-sm text-xs",
+                    on_click: move |_| {
+                        let key2 = key.clone();
+                        spawn(async move {
+                            let _ = api_send("PATCH", &format!("/admin/keys/{key2}/toggle"),
+                                Some(serde_json::json!({"enabled": !enabled}))).await;
+                            on_changed.call(Value::Null);
+                        });
+                    },
+                    if enabled { "禁用" } else { "启用" } }
                 Button { variant: ButtonVariant::Ghost, class: "h-7 rounded-sm text-xs text-down",
                     on_click: move |_| confirm_open.set(true),
                     "删除" }
@@ -1247,6 +1326,145 @@ fn Usage() -> Element {
                         }
                     },
                 }
+            }
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// 实时日志 (SSE)
+// ---------------------------------------------------------------------------
+
+#[component]
+fn Logs() -> Element {
+    let mut lines: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut connected = use_signal(|| false);
+    let mut logbox = use_signal(String::new);
+
+    rsx! {
+        PageHeader { title: "日志".to_string(), desc: "网关实时事件 — SSE 流式推送".to_string() }
+        div { class: "flex items-center gap-2",
+            Button { variant: if *connected.read() { ButtonVariant::Outline } else { ButtonVariant::Primary }, class: "h-8 rounded-sm",
+                on_click: move |_| {
+                    connected.set(true);
+                    let ws = web_sys::window().unwrap();
+                    let es = web_sys::EventSource::new("http://127.0.0.1:8787/admin/logs/stream").unwrap();
+                    let setter = move |e: web_sys::MessageEvent| {
+                        let text = e.data().as_string().unwrap_or_default();
+                        lines.push(text);
+                        if lines.len() > 300 {
+                            let cur = lines();
+                            lines.set(cur.split_off(cur.len() - 300));
+                        }
+                        logbox.set(format!("{:?}", lines.len()));
+                    };
+                    let cb = wasm_bindgen::closure::Closure::wrap(Box::new(setter) as Box<dyn FnMut(web_sys::MessageEvent)>);
+                    es.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+                    cb.forget();
+                },
+                if *connected.read() { "已连接" } else { "连接" } }
+            span { class: "text-xs text-ink/45", "接入后自动滚动, 保留最近 300 条" }
+        }
+        Section { title: "事件流", count: Some(lines().len()),
+            if lines().is_empty() {
+                EmptyRow { text: "暂无事件 — 点「连接」开始接收; 或发起一次对话" }
+            }
+            for (i, l) in lines().iter().enumerate().rev().take(80) {
+                div { key: "{i}-{l}", class: "border-b border-line px-4 py-1.5 font-mono text-xs text-ink/75",
+                    {l.clone()} }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API 测试 (Playground)
+// ---------------------------------------------------------------------------
+
+#[component]
+fn Playground() -> Element {
+    let mut model = use_signal(|| "z-ai/glm-5.3-flash".to_string());
+    let mut prompt = use_signal(|| "你好, 介绍一下你自己".to_string());
+    let mut output = use_signal(String::new);
+    let mut running = use_signal(|| false);
+    let models = ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash", "mimo/mimo-v2.5", "upstage/solar-pro4"];
+
+    let run = move |_| {
+        if *running.read() { return; }
+        running.set(true);
+        output.set(String::new());
+        spawn(async move {
+            let body = serde_json::json!({
+                "model": model(),
+                "messages": [{"role": "user", "content": prompt()}],
+                "stream": true,
+            });
+            let opts = web_sys::RequestInit::new();
+            opts.set_method("POST");
+            opts.set_body(body.to_string().as_str());
+            let req = web_sys::Request::new_with_str_and_init("http://127.0.0.1:8787/v1/chat/completions", &opts).unwrap();
+            req.headers().set("authorization", "Bearer sk-test").ok();
+            req.headers().set("content-type", "application/json").ok();
+            match web_sys::window().unwrap().fetch_with_request(&req).call() {
+                Ok(resp) => {
+                    let resp: web_sys::Response = resp.into().into();
+                    {
+                        if let Ok(text) = js_sys::Promise::from(resp.text().unwrap()).await {
+                        let full = text.as_string().unwrap_or_default();
+                        // SSE 行解析
+                        let mut acc = String::new();
+                        for line in full.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if data == "[DONE]" { break; }
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                    if let Some(c) = v["choices"][0]["delta"]["content"].as_str() {
+                                        acc.push_str(c);
+                                        output.set(acc.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if acc.is_empty() {
+                            output.set(full.clone());
+                        }
+                    }
+                }
+                Err(e) => output.set(format!("请求失败: {e:?}")),
+            }
+            running.set(false);
+        });
+    };
+
+    rsx! {
+        PageHeader { title: "测试".to_string(), desc: "面板内直接发起对话, 验证网关与账号链路".to_string() }
+        Section { title: "请求", count: None,
+            div { class: "flex flex-wrap gap-2 px-4 py-3",
+                for m in models {
+                    button {
+                        key: "{m}",
+                        class: if model() == m { "h-8 rounded-sm border-2 border-ink bg-ink/[0.06] px-3 text-xs font-medium text-ink" } else { "h-8 rounded-sm border border-line px-3 text-xs text-ink/55" },
+                        onclick: move |_| model.set(m.to_string()),
+                        {m.rsplit('/').next().unwrap_or(m)} }
+                }
+            }
+            div { class: "px-4 pb-4",
+                textarea {
+                    class: "min-h-20 w-full border border-line px-3 py-2 text-sm text-ink focus:border-ink focus:outline-none",
+                    value: prompt(),
+                    oninput: move |e| prompt.set(e.value()),
+                }
+                div { class: "mt-3 flex items-center gap-3",
+                    Button { variant: ButtonVariant::Primary, class: "h-9 rounded-sm", disabled: running(),
+                        on_click: run,
+                        if running() { "生成中…" } else { "发送" } }
+                    span { class: "text-xs text-ink/45", "走网关 /v1/chat/completions (流式)" }
+                }
+            }
+        }
+        Section { title: "输出", count: None,
+            div { class: "min-h-24 whitespace-pre-wrap px-4 py-3 text-sm text-ink",
+                if output().is_empty() { span { class: "text-ink/35", "等待发送…" } } else { {output()} }
             }
         }
     }
