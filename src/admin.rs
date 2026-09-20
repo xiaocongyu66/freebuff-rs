@@ -534,10 +534,15 @@ async fn logs_stream(
             yield Ok::<_, std::convert::Infallible>(Event::default().data(line));
         }
         loop {
-            match rx.recv().await {
-                Ok(line) => yield Ok::<_, std::convert::Infallible>(Event::default().data(line)),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
+            // 带超时的 recv: 客户端断开后最多 5s 让 axum 探测到并结束 stream (防任务挂起)
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Ok(line)) => yield Ok::<_, std::convert::Infallible>(Event::default().data(line)),
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    // 超时空转 — keep-alive 由 axum 发, 继续等
+                    continue;
+                }
             }
         }
     };

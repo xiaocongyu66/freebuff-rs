@@ -45,58 +45,17 @@ fn check_auth(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), R
         }
     }
     // ② env 兼容 (sk-test / FREEBUFF_API_KEY)
-    if let Some(expected) = &state.api_key {
-        if got == Some(expected.as_str()) {
-            return Ok(());
-        }
-    }
-    {
-        if let Some(expected) = &state.api_key {
-            let _ = expected;
-        }
-    }
-    if let Some(expected) = &state.api_key {
-        let got2 = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|a| a.strip_prefix("Bearer "))
-            .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
-        let _ = got2;
-        let _ = expected;
-    }
-    // 未命中任何 key
-    {
-        let matched_env = state
-            .api_key
-            .as_ref()
-            .map(|e| got == Some(e.as_str()))
-            .unwrap_or(false);
-        if !matched_env {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error": {"message": "invalid api key", "type": "auth_error"}})),
-            )
-                .into_response());
-        }
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn check_auth_old(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), Response> {
-    if let Some(expected) = &state.api_key {
-        let got = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|a| a.strip_prefix("Bearer "))
-            .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
-        if got != Some(expected.as_str()) {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error": {"message": "invalid api key", "type": "auth_error"}})),
-            )
-                .into_response());
-        }
+    let matched_env = state
+        .api_key
+        .as_ref()
+        .map(|e| got == Some(e.as_str()))
+        .unwrap_or(false);
+    if !matched_env {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "invalid api key", "type": "auth_error"}})),
+        )
+            .into_response());
     }
     Ok(())
 }
@@ -264,7 +223,6 @@ async fn chat_completions(
     Json(protocol::oa_text_response(&model, &content, &reasoning, pt, ct, finish)).into_response()
 }
 
-/// OpenAI Responses API (Codex CLI 等新客户端) — 转内部 chat 再转回
 /// 上游 freebuff 无嵌入模型 — 明确 501, 不假装支持
 async fn embeddings_unsupported() -> Response {
     (
@@ -277,6 +235,7 @@ async fn embeddings_unsupported() -> Response {
         .into_response()
 }
 
+/// OpenAI Responses API (Codex CLI 等新客户端) — 转内部 chat 再转回
 async fn responses_api(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -381,13 +340,20 @@ async fn responses_api(
         "metadata": {},
     });
     if is_stream {
-        // Responses SSE: created → delta → completed (Codex 解析 output_text.delta)
+        // Responses SSE: created → 分块 delta → completed (Codex 解析 output_text.delta)
         let rid2 = resp["id"].as_str().unwrap_or("").to_string();
-        let text_part = content.clone();
         let sse_body = {
             let mut s = String::new();
             s.push_str(&format!("event: response.created\ndata: {}\n\n", json!({"type": "response.created", "response": {"id": rid2, "status": "in_progress"}})));
-            s.push_str(&format!("event: response.output_text.delta\ndata: {}\n\n", json!({"type": "response.output_text.delta", "delta": text_part})));
+            // 增量语义: 按 ~80 字符分块下发 (上游已聚合, 模拟渐进输出)
+            let chars: Vec<char> = content.chars().collect();
+            for chunk in chars.chunks(80) {
+                let piece: String = chunk.iter().collect();
+                s.push_str(&format!(
+                    "event: response.output_text.delta\ndata: {}\n\n",
+                    json!({"type": "response.output_text.delta", "delta": piece})
+                ));
+            }
             s.push_str(&format!("event: response.completed\ndata: {}\n\n", json!({"type": "response.completed", "response": resp})));
             s
         };
