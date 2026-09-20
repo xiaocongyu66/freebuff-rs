@@ -172,6 +172,14 @@ impl Pool {
             .insert(Self::session_key(token, model), s);
     }
 
+    /// 活跃 session 快照: (token, model, instance_id) — 心跳刷新用
+    pub fn all_sessions(&self) -> Vec<(String, String, String)> {
+        let m = self.sessions.lock().unwrap();
+        m.iter()
+            .map(|((t, mo), s)| (t.clone(), mo.clone(), s.instance_id.clone()))
+            .collect()
+    }
+
     pub fn drop_session(&self, token: &str, model: &str) {
         self.sessions.lock().unwrap().remove(&Self::session_key(token, model));
     }

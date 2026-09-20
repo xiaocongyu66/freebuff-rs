@@ -22,6 +22,33 @@ fn error_response(status: u16, msg: &str) -> Response {
         .unwrap()
 }
 
+/// 会话保活: 每 45s GET session 刷新 expiresAt (对齐桌面端心跳); 失效(非200)即删缓存下次重建
+pub async fn session_heartbeat(pool: Arc<Pool>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+        let items = pool.all_sessions();
+        if items.is_empty() {
+            continue;
+        }
+        let base = upstream::base_for("");
+        for (token, model, inst) in items {
+            match upstream::get_session(&base, &token, Some(&inst)).await {
+                Ok(r) if r.status == 200 => {
+                    if let Some(d) = r.json() {
+                        if let Some(s) = upstream::parse_session(&d, &model) {
+                            pool.store_session(&token, &model, s);
+                        }
+                    }
+                }
+                _ => {
+                    // session 已失效/排队超时 — 删缓存, 下次请求重建
+                    pool.drop_session(&token, &model);
+                }
+            }
+        }
+    }
+}
+
 fn parse_cooldown(text: &str, status: u16) -> i64 {
     if status == 429 {
         return 60_000;

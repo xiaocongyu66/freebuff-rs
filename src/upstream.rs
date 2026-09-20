@@ -330,7 +330,7 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
+pub fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
     let status = data["status"].as_str()?;
     let instance_id = data["instanceId"].as_str()?.to_string();
     if status != "active" {

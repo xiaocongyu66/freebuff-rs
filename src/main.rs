@@ -119,6 +119,11 @@ async fn serve() {
         cfg.saved_links.clone()
     };
     let admin_state = Arc::new(admin::AdminState { pool, config: std::sync::Mutex::new(admin::load_config()), relay: relay.clone(), auth_flows });
+    // 会话保活心跳 (45s 刷新活跃 session, 失效删缓存)
+    {
+        let pool_hb = pool.clone();
+        tokio::spawn(async move { gateway::session_heartbeat(pool_hb).await });
+    }
     // 回填节点受限记忆 (端口 → 已测出的 restricted/country)
     {
         let restrictions = admin::load_config().node_restriction;
