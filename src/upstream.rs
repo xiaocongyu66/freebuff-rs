@@ -380,6 +380,10 @@ pub struct Session {
     pub expires_at_ms: i64,
     /// 本次响应里额度耗尽的 (model, resetAt_ms) — 供池按模型冷却跳过
     pub exhausted_models: Vec<(String, i64)>,
+    /// 动态次数表: model → remaining (rateLimitsByModel 实时)
+    pub quota_map: std::collections::HashMap<String, i64>,
+    /// 账号层剩余 (freebucks daily remaining; None=响应无)
+    pub layer_remaining: Option<i64>,
 }
 
 pub fn is_usable_session(s: &Option<Session>) -> bool {
@@ -400,10 +404,14 @@ pub fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
     }
     // 额度耗尽追踪: remaining == 0 的模型记 (model, resetAt_ms)
     let mut exhausted_models: Vec<(String, i64)> = Vec::new();
+    let mut quota_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     if let Some(rl) = data["rateLimitsByModel"].as_object() {
         for (m, v) in rl {
             let remaining = v["remaining"].as_i64()
                 .or_else(|| v["limit"].as_i64().map(|l| l - v["recentCount"].as_i64().unwrap_or(0)));
+            if let Some(r) = remaining {
+                quota_map.insert(m.clone(), r);
+            }
             if remaining == Some(0) {
                 let reset = v["resetAt"].as_str()
                     .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
@@ -422,11 +430,15 @@ pub fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
     } else {
         None
     };
+    // 账号层剩余: freebucks.daily.remaining
+    let layer_remaining = data["freebucks"]["daily"]["remaining"].as_i64();
     Some(Session {
         model: data["model"].as_str().unwrap_or(requested_model).to_string(),
         instance_id,
         expires_at_ms: expires_at_ms.unwrap_or(0),
         exhausted_models,
+        quota_map,
+        layer_remaining,
     })
 }
 
@@ -460,6 +472,7 @@ pub async fn ensure_session(
     force_create: bool,
 ) -> Result<Session, String> {
     // 官方 worker 语义: 广告/签到在 session 创建前发起, 但失败静默跳过不阻塞聊天 → 异步 fire-and-forget
+    // 智能触发: 只在 (a) glm reward 池 (countsAdmissions 需看广告攒次数) 或 (b) 探测性维持(30-40min 稀疏) 时看
     let base_s = base.to_string();
     let token_s = token.to_string();
     let is_reward_model = session_model.contains("glm");

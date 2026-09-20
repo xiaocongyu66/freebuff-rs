@@ -127,6 +127,8 @@ pub async fn execute_chat(
                         pool.note_model_exhausted(&token, m, *until);
                     }
                 }
+                // 动态次数刷新 (每次 session 响应都更新 → 调度始终基于最新余额)
+                pool.refresh_quota(&token, &s.quota_map, s.layer_remaining);
                 s
             }
             Ok(s) => s,

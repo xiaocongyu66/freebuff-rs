@@ -33,6 +33,10 @@ pub struct Pool {
     pub available_models: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// 模型额度耗尽: (token, model) → 冷却至 resetAt_ms — 撞额度切下一账号, 不连累同账号其他模型
     pub model_exhausted: std::sync::Mutex<HashMap<(String, String), i64>>,
+    /// 动态账号次数: token → { model → remaining } — 每次 session 响应实时刷新
+    pub model_remaining: std::sync::Mutex<HashMap<String, HashMap<String, i64>>>,
+    /// 账号层 (limited 层日池) 剩余: token → freebucks daily remaining
+    pub account_layer_remaining: std::sync::Mutex<HashMap<String, i64>>,
     pub accounts: std::sync::Mutex<Vec<Account>>,
     pub idx: AtomicUsize,
     /// token -> cooldown until (ms)
@@ -86,6 +90,31 @@ pub fn parse_accounts(tokens_env: &str, accounts_json: &str) -> Vec<Account> {
 }
 
 impl Pool {
+    /// 动态刷新账号次数 (session 响应驱动; rateLimitsByModel remaining + freebucks daily)
+    pub fn refresh_quota(&self, token: &str, rate_limits: &std::collections::HashMap<String, i64>, layer_remaining: Option<i64>) {
+        {
+            let mut m = self.model_remaining.lock().unwrap();
+            let e = m.entry(token.to_string()).or_default();
+            for (model, rem) in rate_limits {
+                e.insert(model.clone(), *rem);
+            }
+        }
+        if let Some(lr) = layer_remaining {
+            self.account_layer_remaining.lock().unwrap().insert(token.to_string(), lr);
+        }
+    }
+
+    /// 该账号该模型动态剩余 (>0 才可调度; 无数据=未知放行)
+    pub fn dynamic_remaining(&self, token: &str, model: &str) -> Option<i64> {
+        let m = self.model_remaining.lock().unwrap();
+        m.get(token).and_then(|e| e.get(model)).copied()
+    }
+
+    /// 账号层剩余 (<=0 = 整号免门 429; 无数据=未知放行)
+    pub fn layer_remaining(&self, token: &str) -> Option<i64> {
+        self.account_layer_remaining.lock().unwrap().get(token).copied()
+    }
+
     /// 账号级耗尽标记 (30 分钟)
     pub fn note_account_exhausted(&self, token: &str) {
         self.model_exhausted
@@ -178,6 +207,8 @@ impl Pool {
         let init: std::collections::BTreeSet<String> =
             crate::models::FREE_TIER_MODELS.iter().map(|s| s.to_string()).collect();
         Self {
+            model_remaining: std::sync::Mutex::new(HashMap::new()),
+            account_layer_remaining: std::sync::Mutex::new(HashMap::new()),
             model_exhausted: std::sync::Mutex::new(HashMap::new()),
             available_models: std::sync::Mutex::new(init),
             accounts: std::sync::Mutex::new(parse_accounts(tokens_env, accounts_json)),
@@ -287,6 +318,10 @@ impl Pool {
                 if self.in_cooldown(&acct.token) || self.is_exhausted(&acct.token) || !self.model_has_quota(&acct.token, model) {
                     continue;
                 }
+                // 动态余额: 明确剩余 0 → 跳过 (数据新鲜度由每次 session 响应保证)
+                if self.dynamic_remaining(&acct.token, model) == Some(0) {
+                    continue;
+                }
                 if self.cached_session(&acct.token, model).is_some() {
                     return Some(acct.clone());
                 }
@@ -295,7 +330,7 @@ impl Pool {
         let start = self.idx.fetch_add(1, Ordering::Relaxed);
         for k in 0..use_pool.len() {
             let acct = &use_pool[(start + k) % use_pool.len()];
-            let quota_ok = session_model.map(|m| self.model_has_quota(&acct.token, m)).unwrap_or(true);
+            let quota_ok = session_model.map(|m| self.model_has_quota(&acct.token, m) && self.dynamic_remaining(&acct.token, m) != Some(0)).unwrap_or(true);
             if !self.in_cooldown(&acct.token) && quota_ok && !self.is_exhausted(&acct.token) {
                 return Some(acct.clone());
             }
