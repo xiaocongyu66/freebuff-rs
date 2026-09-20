@@ -1118,6 +1118,8 @@ fn RenameDialog(
 fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
     let key = k["key"].as_str().unwrap_or("").to_string();
     let masked = mask_key(&key);
+    let key_toggle = key.clone();
+    let key_delete = key.clone();
     let mut confirm_open = use_signal(|| false);
     let enabled = k["enabled"].as_bool().unwrap_or(true);
     rsx! {
@@ -1135,7 +1137,7 @@ fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
             right: rsx! {
                 Button { variant: ButtonVariant::Ghost, class: "h-7 rounded-sm text-xs",
                     on_click: move |_| {
-                        let key2 = key.clone();
+                        let key2 = key_toggle.clone();
                         spawn(async move {
                             let _ = api_send("PATCH", &format!("/admin/keys/{key2}/toggle"),
                                 Some(serde_json::json!({"enabled": !enabled}))).await;
@@ -1148,7 +1150,7 @@ fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
                     "删除" }
                 ConfirmDeleteDialog { open: confirm_open, title: "删除 API Key".to_string(), target: k["name"].as_str().unwrap_or("").to_string(),
                     on_confirm: move |_| {
-                        let key = key.clone();
+                        let key = key_delete.clone();
                         spawn(async move {
                             let _ = api_send("DELETE", &format!("/admin/keys/{key}"), None).await;
                         });
@@ -1356,7 +1358,7 @@ fn Logs() -> Element {
                         let text = e.data().as_string().unwrap_or_default();
                         lines.push(text);
                         if lines.len() > 300 {
-                            let cur = lines();
+                            let mut cur = lines();
                             lines.set(cur.split_off(cur.len() - 300));
                         }
                         logbox.set(format!("{:?}", lines.len()));
@@ -1404,7 +1406,7 @@ fn Playground() -> Element {
             });
             let opts = web_sys::RequestInit::new();
             opts.set_method("POST");
-            opts.set_body(&js_sys::JsValue::from_str(&body.to_string()));
+            opts.set_body(&wasm_bindgen::JsValue::from_str(&body.to_string()));
             let req = web_sys::Request::new_with_str_and_init("http://127.0.0.1:8787/v1/chat/completions", &opts).unwrap();
             req.headers().set("authorization", "Bearer sk-test").ok();
             req.headers().set("content-type", "application/json").ok();
