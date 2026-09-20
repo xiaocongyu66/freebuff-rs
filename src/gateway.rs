@@ -137,8 +137,8 @@ pub async fn execute_chat(
             }
         };
 
-        // run 链 (10min 复用缓存)
-        let run = match run_chain(pool, &token, &mc.agent).await {
+        // run 链 (10min 复用缓存) — invalidate 后必须更新此变量 (否则重试永远带死 runId)
+        let mut run = match run_chain(pool, &token, &mc.agent).await {
             Ok(r) => r,
             Err(e) => {
                 last_err = e;
@@ -173,16 +173,19 @@ pub async fn execute_chat(
                         continue;
                     }
                     if status == 400 && attempt <= 2 {
-                        // ① runId 类: 只重开 run (旧 session 还活着的正常情况)
-                        if text.contains("runId Not Running")
-                            && invalidate_run(&pool, &token, &mc.agent).await.is_ok()
-                        {
-                            continue;
+                        // ① runId 类: 重开 run 并更新 payload 用的 run 变量 (旧变量是死的)
+                        if text.contains("runId Not Running") {
+                            match invalidate_run(&pool, &token, &mc.agent).await {
+                                Ok(new_run) => { run = new_run; continue; }
+                                Err(_) => {}
+                            }
                         }
                         // ② 其他 400: session 侧问题 (假页/坏流) — 删会话重建 (glm 除外, 固定会话)
                         if session_model.contains("glm") {
-                            // glm: 只重开 run, 不动会话
-                            let _ = invalidate_run(&pool, &token, &mc.agent).await;
+                            // glm: 重开 run (新 run 同步), 不动会话
+                            if let Ok(new_run) = invalidate_run(&pool, &token, &mc.agent).await {
+                                run = new_run;
+                            }
                             continue;
                         }
                         eprintln!("[chat] 400 -> drop session + recreate + retry");
