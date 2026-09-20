@@ -182,9 +182,8 @@ async fn serve() {
     let app = server::router(state).merge(admin::router(admin_state).await);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.unwrap();
     // 优雅退出 (Rust 惯用): SIGINT/SIGTERM → 停止收新请求 → 清理全部活跃 session → 退出
-    let pool_sd = pool.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(pool_sd))
+        .with_graceful_shutdown(shutdown_signal(std::sync::Arc::clone(&pool)))
         .await
         .unwrap();
     eprintln!("[freebuff-rs] bye");
