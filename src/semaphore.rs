@@ -11,7 +11,8 @@ pub const DEFAULT_FREE_MULTI: usize = 3;
 pub const DEFAULT_SUB_SLOTS: usize = 3;
 pub const DEFAULT_SUB_MULTI: usize = 8;
 /// acquire 超时: 超时视为并发繁忙 (429 语义, 对齐上游 waiting_room)
-pub const ACQUIRE_TIMEOUT_MS: u64 = 2000;
+/// 排队上限: 免费层真实并发=1, 但多账号可轮换 — 等待是常态, 2s 超时会把正常排队打成 429 风暴
+pub const ACQUIRE_TIMEOUT_MS: u64 = 30000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcquireError {
@@ -46,6 +47,12 @@ impl TieredSemaphore {
     /// 默认容量 (免费 {1,3} / 订阅 {3,8})
     pub fn defaults() -> Self {
         Self::new(DEFAULT_FREE_SLOTS, DEFAULT_FREE_MULTI, DEFAULT_SUB_SLOTS, DEFAULT_SUB_MULTI)
+    }
+
+    /// 按账号数缩放: 上游并发墙是"每账号"槽1, N 账号 → 槽 N (上限 4 防过冲)
+    pub fn for_accounts(accounts: usize) -> Self {
+        let n = accounts.clamp(1, 4);
+        Self::new(n, (n * 3).min(12), DEFAULT_SUB_SLOTS, DEFAULT_SUB_MULTI)
     }
 
     /// 占用桶; 超时 2s 返回 Busy (调用方转 429)

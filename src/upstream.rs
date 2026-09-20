@@ -429,6 +429,31 @@ pub async fn ensure_session(
     )
     .await?;
     let data = r.json();
+    // create 被拒(409=已有活跃会话等) → 删现有 session → 重建一次 (根治 session_model_mismatch)
+    if r.status != 200 && r.status != 429 {
+        eprintln!("[session] create {} -> {}, try delete+recreate", session_model, r.status);
+        if let Ok(cur) = get_session(base, token, None).await {
+            if cur.status == 200 {
+                if let Some(d) = cur.json() {
+                    if let Some(old) = d["instanceId"].as_str() {
+                        delete_upstream_session(base, token, old).await;
+                    }
+                }
+            }
+        }
+        let retry = up_at(base, "POST", "/api/v1/freebuff/session", token, None,
+            &[
+                ("x-freebuff-model", session_model.to_string()),
+                ("x-freebuff-instance-id", inst_id.clone()),
+            ],
+            Duration::from_secs(10),
+        ).await?;
+        if retry.status == 200 {
+            if let Some(s) = retry.json().as_ref().and_then(|d| parse_session(d, session_model)) {
+                return Ok(s);
+            }
+        }
+    }
     if r.status == 200 {
         if let Some(s) = data.as_ref().and_then(|d| parse_session(d, session_model)) {
             return Ok(s);

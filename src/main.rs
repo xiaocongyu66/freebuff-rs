@@ -116,7 +116,7 @@ async fn serve() {
         pool: pool.clone(),
         registry,
         api_key,
-        sem: Arc::new(semaphore::TieredSemaphore::defaults()),
+        sem: Arc::new(semaphore::TieredSemaphore::for_accounts(pool.accounts.lock().unwrap().len())),
         gateway_keys: Arc::clone(&gateway_keys),
         logbus: Arc::clone(&logbus),
     };
