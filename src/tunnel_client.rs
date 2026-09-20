@@ -210,6 +210,17 @@ pub async fn tunnel_outbound() -> Option<(Arc<Outbound>, u16)> {
     relay.best_outbound().await
 }
 
+/// 账号粘性出站: 同账号恒同 IP — 多账号分散多 IP, 消除同 IP 多账号特征
+pub async fn tunnel_outbound_for(token: &str) -> Option<(Arc<Outbound>, u16)> {
+    let relay = tunnel_relay()?;
+    if let Ok(p) = std::env::var("FREEBUFF_PROXY") {
+        if let Some(port) = p.rsplit(':').next().and_then(|x| x.parse::<u16>().ok()) {
+            return relay.outbound_for_port(port).await.map(|ob| (ob, port));
+        }
+    }
+    relay.sticky_outbound(token).await
+}
+
 pub fn split_host_port(hostport: &str) -> (String, u16) {
     if let Some(rest) = hostport.strip_prefix('[') {
         if let Some(idx) = rest.find(']') {

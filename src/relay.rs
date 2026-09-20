@@ -132,6 +132,31 @@ impl Relay {
         nodes.values().find(|n| n.local_port == port).and_then(|n| n.ob.clone())
     }
 
+    /// 账号粘性出站: token hash → 稳定节点 (同账号恒同 IP, 多账号分散到多 IP)
+    /// 目标节点不可用(fail 多/死)时顺延到下一候选
+    pub async fn sticky_outbound(&self, token: &str) -> Option<(Arc<crate::tunnel::outbound::Outbound>, u16)> {
+        let nodes = self.nodes.lock().await;
+        let mut candidates: Vec<&RelayNode> = nodes.values().filter(|n| n.ob.is_some()).collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates.sort_by_key(|n| (n.fail_count, n.restricted));
+        // 稳定 hash (FNV-1a): 同 token 恒同序位
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in token.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        let start = (h as usize) % candidates.len();
+        for k in 0..candidates.len() {
+            let n = candidates[(start + k) % candidates.len()];
+            if n.fail_count < 3 {
+                return n.ob.clone().map(|ob| (ob, n.local_port));
+            }
+        }
+        candidates[start].ob.clone().map(|ob| (ob, candidates[start].local_port))
+    }
+
     /// 调度: 优先未受限出口 (受限=出口IP导致 limited 层), 全受限再退回
     pub async fn best_outbound(&self) -> Option<(Arc<crate::tunnel::outbound::Outbound>, u16)> {
         let mut nodes = self.nodes.lock().await;

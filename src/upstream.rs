@@ -140,7 +140,7 @@ pub async fn up_base(
     }
     // 隧道直连优先 (免回环跳); 熔断态直接跳过 (连续失败 60s 内不试隧道)
     if crate::tunnel_client::tunnel_ok() {
-    if let Some((ob, port)) = crate::tunnel_client::tunnel_outbound().await {
+    if let Some((ob, port)) = crate::tunnel_client::tunnel_outbound_for(token).await {
         let host = base
             .trim_start_matches("https://")
             .trim_start_matches("http://")
@@ -569,7 +569,7 @@ pub async fn chat_completions(
 ) -> Result<ChatUpResp, String> {
     // 隧道直连优先 — 熔断态跳过; 主机跟 base
     if crate::tunnel_client::tunnel_ok() {
-    if let Some((ob, port)) = crate::tunnel_client::tunnel_outbound().await {
+    if let Some((ob, port)) = crate::tunnel_client::tunnel_outbound_for(token).await {
         match crate::tunnel_client::request(
             ob, host_of(base), "POST", "/api/v1/chat/completions", token,
             &[("x-freebuff-instance-id", instance_id.to_string())], Some(payload), 45,
