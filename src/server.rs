@@ -107,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/responses", post(responses_api))
+        .route("/v1/embeddings", post(embeddings_unsupported))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .with_state(Arc::new(state))
@@ -264,6 +265,18 @@ async fn chat_completions(
 }
 
 /// OpenAI Responses API (Codex CLI 等新客户端) — 转内部 chat 再转回
+/// 上游 freebuff 无嵌入模型 — 明确 501, 不假装支持
+async fn embeddings_unsupported() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "error": {"message": "upstream freebuff provides no embedding models; /v1/embeddings is not available",
+                      "type": "not_supported_error"}
+        })),
+    )
+        .into_response()
+}
+
 async fn responses_api(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
