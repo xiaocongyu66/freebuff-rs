@@ -855,6 +855,7 @@ fn AccountRow(d: Value, mut probe: Signal<Option<Value>>, mut probing: Signal<Op
     let head_query = head.trim_end_matches("...").to_string();
     let is_probing = probing() == Some(head_query.clone());
     let head_del = head_query.clone();
+    let head_del_rename = head_query.clone();
     rsx! {
         Row {
             left: rsx! {
@@ -890,7 +891,7 @@ fn AccountRow(d: Value, mut probe: Signal<Option<Value>>, mut probing: Signal<Op
                     } }
                 RenameDialog { open: rename_open, title: "账号命名".to_string(), initial: d["alias"].as_str().unwrap_or("").to_string(),
                     on_save: move |name: String| {
-                        let hd = head_del.clone();
+                        let hd = head_del_rename.clone();
                         spawn(async move {
                             let _ = api_send("PATCH", &format!("/admin/accounts/{hd}/alias"),
                                 Some(serde_json::json!({"name": name}))).await;
@@ -1113,6 +1114,7 @@ fn RenameDialog(
     }
 }
 
+#[component]
 fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
     let key = k["key"].as_str().unwrap_or("").to_string();
     let masked = mask_key(&key);
@@ -1402,14 +1404,19 @@ fn Playground() -> Element {
             });
             let opts = web_sys::RequestInit::new();
             opts.set_method("POST");
-            opts.set_body(body.to_string().as_str());
+            opts.set_body(&js_sys::JsValue::from_str(&body.to_string()));
             let req = web_sys::Request::new_with_str_and_init("http://127.0.0.1:8787/v1/chat/completions", &opts).unwrap();
             req.headers().set("authorization", "Bearer sk-test").ok();
             req.headers().set("content-type", "application/json").ok();
-            match web_sys::window().unwrap().fetch_with_request(&req).call() {
-                Ok(resp) => {
-                    let resp: web_sys::Response = resp.into().into();
-                    if let Ok(text) = js_sys::Promise::from(resp.text().unwrap()).await {
+            let fetch_p = web_sys::window().unwrap().fetch_with_request(&req);
+            match wasm_bindgen_futures::JsFuture::from(fetch_p).await {
+                Ok(v) => {
+                    let resp: web_sys::Response = v.into();
+                    let text_p = match resp.text() {
+                        Ok(p) => p,
+                        Err(e) => { output.set(format!("读取失败: {e:?}")); running.set(false); return; }
+                    };
+                    if let Ok(text) = wasm_bindgen_futures::JsFuture::from(text_p).await {
                         let full = text.as_string().unwrap_or_default();
                         // SSE 行解析
                         let mut acc = String::new();
