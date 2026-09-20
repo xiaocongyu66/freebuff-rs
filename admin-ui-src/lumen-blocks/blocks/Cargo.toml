@@ -14,7 +14,7 @@ repository = "https://github.com/Leaf-Computer/lumen-blocks"
 [dependencies]
 dioxus.workspace = true
 dioxus-sdk-time.workspace = true
-dioxus-primitives = { path = "/tmp/dioxus-components/primitives", package = "dioxus-primitives" }
+dioxus-primitives = { path = "../../dioxus-components/primitives", package = "dioxus-primitives" }
 tracing.workspace = true
 lucide-dioxus = { workspace = true, features = ["all-icons"] }
 log = "0.4"

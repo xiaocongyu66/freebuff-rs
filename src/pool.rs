@@ -20,6 +20,8 @@ pub struct Health {
     pub state: String,
     pub uid: Option<String>,
     pub checked_at: Instant,
+    /// 健康评分 0-100: 成功+5 失败-15; pick 优先高分账号
+    pub score: i32,
 }
 
 pub struct Pool {
@@ -150,11 +152,20 @@ impl Pool {
             })
             .cloned()
             .collect();
-        let use_pool = if alive_pool.is_empty() {
+        let mut use_pool = if alive_pool.is_empty() {
             self.accounts.lock().unwrap().clone()
         } else {
             alive_pool
         };
+        // 健康评分优先: 高分账号先被轮询到 (评分相同时保持原轮询序)
+        {
+            let h = self.health.lock().unwrap();
+            use_pool.sort_by(|a, b| {
+                let sa = h.get(&a.token).map(|x| x.score).unwrap_or(100);
+                let sb = h.get(&b.token).map(|x| x.score).unwrap_or(100);
+                sb.cmp(&sa)
+            });
+        }
 
         if let Some(model) = session_model {
             for acct in &use_pool {
@@ -219,6 +230,7 @@ impl Pool {
             state: "unknown".into(),
             uid: None,
             checked_at: Instant::now(),
+            score: 100,
         });
         entry.alive = Some(state == "ok");
         entry.state = state.to_string();
@@ -226,6 +238,8 @@ impl Pool {
             entry.uid = uid;
         }
         entry.checked_at = Instant::now();
+        // 健康评分: 成功+5 失败-15, 限幅 0..=100
+        entry.score = (entry.score + if state == "ok" { 5 } else { -15 }).clamp(0, 100);
     }
 
     pub fn health_summary(&self) -> Value {
@@ -239,6 +253,7 @@ impl Pool {
                     "token": format!("{}...", &a.token[..a.token.len().min(8)]),
                     "alive": info.map(|i| i.alive),
                     "state": info.map(|i| i.state.as_str()).unwrap_or("unknown"),
+                    "score": info.map(|i| i.score).unwrap_or(100),
                     "source": a.source,
                 })
             })
