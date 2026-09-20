@@ -164,6 +164,10 @@ pub async fn execute_chat(
                     pool.observe(&token, status, &text);
                     // 耗尽/限流(429) → 删 session 重建 → 重试一次
                     // glm 例外: reward 池对会话重置不敏感, 固定会话即可 (重建反而打乱 rhythm)
+                    if status == 429 {
+                        // 广告波熔断 30 分钟 (上游已拒, 空转只会加剧)
+                        let _ = upstream::mark_exhausted(&token);
+                    }
                     if status == 429 && attempt <= 2 && !session_model.contains("glm") {
                         eprintln!("[chat] 429 -> drop session + recreate + retry");
                         pool.drop_session(&token, &mc.session.as_str().to_string().as_str());

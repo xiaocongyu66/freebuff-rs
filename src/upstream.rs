@@ -280,6 +280,15 @@ pub async fn run_normal_client_behavior(base: &str, token: &str) {
 
 pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_model: bool) {
     let ads_key = format!("ads:{token}");
+    // 耗尽熔断: 上游 429 后 30 分钟内不发任何广告/签到 (空转烧池 + 滥用信号)
+    {
+        let m = behavior_cache().lock().unwrap();
+        if let Some(t) = m.get(&format!("exhausted:{token}")) {
+            if t.elapsed() < std::time::Duration::from_secs(30 * 60) {
+                return;
+            }
+        }
+    }
     if reward_model {
         // glm Reward: 2-4 分钟窗口内随机 — 统一间隔是蜜罐签名 (同刻同模式 = 批量特征)
         run_ads_round(base, token, 2 * 60, 4 * 60).await;
@@ -312,6 +321,13 @@ async fn run_ads_round(base: &str, token: &str, lo: u64, hi: u64) {
         }
         watch_one_ad(base, token).await;
     }
+}
+
+/// 账号耗尽标记 (广告波熔断用)
+pub fn mark_exhausted(token: &str) {
+    let key = format!("exhausted:{token}");
+    let mut m = behavior_cache().lock().unwrap();
+    m.insert(key, Instant::now());
 }
 
 async fn watch_one_ad(base: &str, token: &str) {
