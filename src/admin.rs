@@ -329,9 +329,20 @@ async fn nodes_probe(
                     let d = serde_json::from_str::<Value>(&text).ok();
                     let tier = d.as_ref().and_then(|d| d["accessTier"].as_str()).unwrap_or("").to_string();
                     let country = d.as_ref().and_then(|d| d["countryCode"].as_str()).unwrap_or("").to_string();
-                    let restricted = tier == "limited";
+                    // VPN 检测: country_blocked 也算受限 (上游点名拒代理)
+                    let vpn_blocked = (200..300).contains(&stt) && text.contains("VPN or proxy");
+                    let restricted = tier == "limited" || vpn_blocked;
                     if let Some(p) = port {
                         st.relay.mark_probe(p, restricted, &country).await;
+                        // VPN 检测命中的节点: 直接删除 (用户指令: 不再使用并且删除受限节点)
+                        if vpn_blocked {
+                            st.relay.remove_node_by_port(p).await;
+                            let mut cfg = load_config();
+                            cfg.node_restriction.remove(&p);
+                            save_config(&cfg);
+                            *st.config.lock().unwrap() = cfg;
+                            eprintln!("[relay] VPN 检测命中, 已删除节点 :{p}");
+                        }
                         // 持久化受限记忆 (重启后仍避开受限出口)
                         let mut cfg = load_config();
                         cfg.node_restriction.insert(p, (restricted, country.clone()));

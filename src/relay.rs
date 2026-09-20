@@ -77,6 +77,28 @@ impl Relay {
         if link.is_empty() {
             return Err("empty link".into());
         }
+        // 导入即测: 建出站 → 经它请求 /auth 级连通 + VPN 检测 — 不过关直接拒收
+        // (防止受限节点进池后被调度 → 请求必拒 → 反复试错)
+        {
+            let ob = crate::tunnel::outbound::Outbound::from_link(&link)
+                .map_err(|e| format!("链接解析失败: {e}"))?;
+            match crate::tunnel_client::request(
+                std::sync::Arc::new(ob), "www.codebuff.com", "GET",
+                "/api/v1/freebuff/session", "", &[("x-freebuff-include-unused-rate-limits", "1".into())],
+                None, 15,
+            ).await {
+                Ok((stt, body_inc)) => {
+                    let body_text = crate::upstream::body_to_string(body_inc).await;
+                    if body_text.contains("VPN or proxy") {
+                        return Err("节点被上游 VPN 检测命中 (country_blocked) — 已拒收, 请换住宅出口节点".into());
+                    }
+                    if !(100..600).contains(&stt) {
+                        return Err(format!("节点出站不可用 (status {stt}) — 已拒收"));
+                    }
+                }
+                Err(e) => return Err(format!("节点连不通: {e} — 已拒收")),
+            }
+        }
         // 段1: 短锁 — 查重/容量/端口分配 (不跨 await)
         let port;
         {
@@ -136,7 +158,12 @@ impl Relay {
     /// 目标节点不可用(fail 多/死)时顺延到下一候选
     pub async fn sticky_outbound(&self, token: &str) -> Option<(Arc<crate::tunnel::outbound::Outbound>, u16)> {
         let nodes = self.nodes.lock().await;
-        let mut candidates: Vec<&RelayNode> = nodes.values().filter(|n| n.ob.is_some()).collect();
+        // VPN 检测命中的节点(探测出 limited/country_blocked)直接排除 — 上游明确拒代理流量
+        let mut candidates: Vec<&RelayNode> = nodes.values().filter(|n| n.ob.is_some() && !n.restricted).collect();
+        if candidates.is_empty() {
+            // 全受限则不过滤 (垂死挣扎好过必拒)
+            candidates = nodes.values().filter(|n| n.ob.is_some()).collect();
+        }
         if candidates.is_empty() {
             return None;
         }
@@ -161,7 +188,10 @@ impl Relay {
     pub async fn best_outbound(&self) -> Option<(Arc<crate::tunnel::outbound::Outbound>, u16)> {
         let mut nodes = self.nodes.lock().await;
         self.prune_dead(&mut nodes);
-        let mut candidates: Vec<&RelayNode> = nodes.values().filter(|n| n.ob.is_some()).collect();
+        let mut candidates: Vec<&RelayNode> = nodes.values().filter(|n| n.ob.is_some() && !n.restricted).collect();
+        if candidates.is_empty() {
+            candidates = nodes.values().filter(|n| n.ob.is_some()).collect();
+        }
         if candidates.is_empty() {
             return None;
         }
@@ -178,6 +208,12 @@ impl Relay {
             .values()
             .find(|n| Some(n.local_port as u64) == by_port || n.link.starts_with(prefix))
             .and_then(|n| n.ob.clone().map(|ob| (ob, n.local_port)))
+    }
+
+    /// 删除指定端口节点 (VPN 检测命中的清理)
+    pub async fn remove_node_by_port(&self, port: u16) {
+        let mut nodes = self.nodes.lock().await;
+        nodes.retain(|_, n| n.local_port != port);
     }
 
     /// probe 后更新节点受限记忆 (同时清零失败计数)
