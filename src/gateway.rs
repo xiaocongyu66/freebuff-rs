@@ -172,9 +172,19 @@ pub async fn execute_chat(
                         }
                         continue;
                     }
-                    if status == 400 && text.contains("runId Not Running") && attempt <= 2 {
-                        if invalidate_run(&pool, &token, &mc.agent).await.is_ok() {
+                    if status == 400 && attempt <= 2 {
+                        // ① runId 类: 只重开 run (旧 session 还活着的正常情况)
+                        if text.contains("runId Not Running")
+                            && invalidate_run(&pool, &token, &mc.agent).await.is_ok()
+                        {
                             continue;
+                        }
+                        // ② 其他 400: session 侧问题 (假页/坏流) — 删会话重建, 别连吃 3 次
+                        eprintln!("[chat] 400 -> drop session + recreate + retry");
+                        pool.drop_session(&token, session_model);
+                        match upstream::ensure_session(base, &token, session_model, &None, true).await {
+                            Ok(s2) => { sess = s2; continue; }
+                            Err(e) => { last_err = e; break; }
                         }
                     }
                     if is_stale_session(status, &text) && attempt == 1 {

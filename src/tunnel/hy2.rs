@@ -40,7 +40,7 @@ impl Hy2Target {
     }
 
     pub async fn dial(&self, host: &str, port: u16) -> Result<BoxStream, String> {
-        let (conn, ctrl) = open_conn(self).await?;
+        let (conn, ctrl) = pooled_conn(self).await?;
         // TCP 请求帧: varint 0x401 + varint addrLen + "host:port" 文本 + varint padLen(0)
         // (hysteria2 传 txthinking socks5 Request.Address() = 文本形式; IPv6 需方括号)
         let addr = text_addr(host, port);
@@ -245,6 +245,45 @@ pub(crate) async fn read_varint(r: &mut quinn::RecvStream) -> Result<u64, String
 
 // --- QUIC 连接 + HTTP/3 auth ---
 type H3Ctrl = h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>;
+
+/// hy2 连接池: 同 target 复用 QUIC 连接 (避免每请求重握手 — 抖动大头)
+/// key = "server:port:password" ; 值持 conn + ctrl (ctrl 保活计数)
+static POOL: std::sync::OnceLock<tokio::sync::Mutex<std::collections::HashMap<String, (quinn::Connection, H3Ctrl, std::time::Instant)>>> =
+    std::sync::OnceLock::new();
+const POOL_IDLE_SECS: u64 = 240;
+
+fn pool() -> &'static tokio::sync::Mutex<std::collections::HashMap<String, (quinn::Connection, H3Ctrl, std::time::Instant)>> {
+    POOL.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+async fn pooled_conn(t: &Hy2Target) -> Result<(quinn::Connection, H3Ctrl), String> {
+    let key = format!("{}:{}:{}", t.server, t.port, t.password);
+    // 快路径: 池内有活连接 (校验 RTT: closed 判定用 stat, 失败即重建)
+    {
+        let mut m = pool().lock().await;
+        // 清过期
+        m.retain(|_, (_, _, at)| at.elapsed() < std::time::Duration::from_secs(POOL_IDLE_SECS));
+        if let Some((conn, ctrl, at)) = m.get_mut(&key) {
+            if conn.close_reason().is_none() {
+                *at = std::time::Instant::now();
+                return Ok((conn.clone(), ctrl.clone()));
+            }
+            m.remove(&key);
+        }
+    }
+    // 慢路径: 新建 (持锁重查防并发重复建)
+    let mut m = pool().lock().await;
+    if let Some((conn, ctrl, at)) = m.get_mut(&key) {
+        if conn.close_reason().is_none() {
+            *at = std::time::Instant::now();
+            return Ok((conn.clone(), ctrl.clone()));
+        }
+        m.remove(&key);
+    }
+    let (conn, ctrl) = open_conn(t).await?;
+    m.insert(key, (conn.clone(), ctrl.clone(), std::time::Instant::now()));
+    Ok((conn, ctrl))
+}
 
 async fn open_conn(t: &Hy2Target) -> Result<(quinn::Connection, H3Ctrl), String> {
     let (conn, _endpoint) = match (&t.obfs, &t.obfs_password) {
