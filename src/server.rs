@@ -44,12 +44,11 @@ fn check_auth(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), R
             };
         }
     }
-    // ② env 兼容 (sk-test / FREEBUFF_API_KEY)
-    let matched_env = state
-        .api_key
-        .as_ref()
-        .map(|e| got == Some(e.as_str()))
-        .unwrap_or(false);
+    // ② env 兼容: 未设 FREEBUFF_API_KEY = 不鉴权 (None 放行, 原语义)
+    let matched_env = match &state.api_key {
+        None => true,
+        Some(e) => got == Some(e.as_str()),
+    };
     if !matched_env {
         return Err((
             StatusCode::UNAUTHORIZED,
