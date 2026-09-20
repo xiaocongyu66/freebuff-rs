@@ -1409,8 +1409,7 @@ fn Playground() -> Element {
             match web_sys::window().unwrap().fetch_with_request(&req).call() {
                 Ok(resp) => {
                     let resp: web_sys::Response = resp.into().into();
-                    {
-                        if let Ok(text) = js_sys::Promise::from(resp.text().unwrap()).await {
+                    if let Ok(text) = js_sys::Promise::from(resp.text().unwrap()).await {
                         let full = text.as_string().unwrap_or_default();
                         // SSE 行解析
                         let mut acc = String::new();
