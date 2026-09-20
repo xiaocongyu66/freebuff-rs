@@ -237,6 +237,15 @@ fn behavior_due(key: &str) -> bool {
 }
 
 /// 伪随机 (每 key 稳定 hash 熵): 时间纳秒 ^ 指针地址 — 每次调用不同, 但同 key 同轮只算一次
+fn jitter_u64(key: &str, lo: u64, hi: u64) -> u64 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let h = t ^ (key.as_ptr() as u64).rotate_left(17) ^ (key.len() as u64);
+    lo + (h % (hi - lo).max(1))
+}
+
 fn jitter_secs(key: &str, lo: u64, hi: u64) -> u64 {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -290,29 +299,43 @@ pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_mod
 
 async fn run_ads_round(base: &str, token: &str, lo: u64, hi: u64) {
     let ads_key = format!("ads:{token}");
-    if behavior_due_jitter(&ads_key, lo, hi) {
-        let body = json!({
-            "provider": "gravity",
-            "sessionId": uuid::Uuid::new_v4().to_string(),
-            "surface": "waiting_room",
-            "device": {"os": "macos", "timezone": "Asia/Shanghai", "locale": "zh-CN"},
-            "userAgent": "Freebuff-CLI/0.0.138",
-        });
-        if let Ok(ad) = up_at(base, "POST", "/api/v1/ads", token, Some(&body),
-            &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6),
-        ).await {
-            let imp_url = ad.json()
-                .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
-            if ad.status == 200 {
-                if let Some(imp) = imp_url {
-                    // impUrl 是第三方 CDN 完整 URL (非 codebuff API path) — 用 reqwest 直取, 不进 API 通道
-                    if imp.starts_with("http") {
-                        let _ = http().get(&imp).timeout(Duration::from_secs(8)).send().await;
-                    }
-                    let ib = json!({"impUrl": imp, "mode": "free"});
-                    let _ = up_at(base, "POST", "/api/v1/ads/impression", token, Some(&ib),
-                        &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6)).await;
+    if !behavior_due_jitter(&ads_key, lo, hi) {
+        return;
+    }
+    // 突发模式 (更真人): 真人看广告是一波连看 4-6 个 (攒次数), 不是匀速单发
+    // 波内间隔 2-5s 随机; 波与波之间仍是节流窗口
+    let burst: u64 = 4 + (jitter_u64(&ads_key, 0, 3)); // 4..=6
+    for i in 0..burst {
+        if i > 0 {
+            let gap = jitter_u64(&format!("{ads_key}:{i}"), 2, 6);
+            tokio::time::sleep(Duration::from_secs(gap)).await;
+        }
+        watch_one_ad(base, token).await;
+    }
+}
+
+async fn watch_one_ad(base: &str, token: &str) {
+    let body = json!({
+        "provider": "gravity",
+        "sessionId": uuid::Uuid::new_v4().to_string(),
+        "surface": "waiting_room",
+        "device": {"os": "macos", "timezone": "Asia/Shanghai", "locale": "zh-CN"},
+        "userAgent": "Freebuff-CLI/0.0.138",
+    });
+    if let Ok(ad) = up_at(base, "POST", "/api/v1/ads", token, Some(&body),
+        &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6),
+    ).await {
+        let imp_url = ad.json()
+            .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
+        if ad.status == 200 {
+            if let Some(imp) = imp_url {
+                // impUrl 是第三方 CDN 完整 URL (非 codebuff API path) — 用 reqwest 直取, 不进 API 通道
+                if imp.starts_with("http") {
+                    let _ = http().get(&imp).timeout(Duration::from_secs(8)).send().await;
                 }
+                let ib = json!({"impUrl": imp, "mode": "free"});
+                let _ = up_at(base, "POST", "/api/v1/ads/impression", token, Some(&ib),
+                    &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6)).await;
             }
         }
     }
