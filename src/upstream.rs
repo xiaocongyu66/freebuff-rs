@@ -138,7 +138,8 @@ pub async fn up_base(
     if let Some(b) = body {
         req = req.body(b.to_string());
     }
-    // 隧道直连优先 (免回环跳); 主机从 base 提取 — freebuff.com 授权不可拨错源
+    // 隧道直连优先 (免回环跳); 熔断态直接跳过 (连续失败 60s 内不试隧道)
+    if crate::tunnel_client::tunnel_ok() {
     if let Some((ob, port)) = crate::tunnel_client::tunnel_outbound().await {
         let host = base
             .trim_start_matches("https://")
@@ -158,14 +159,17 @@ pub async fn up_base(
         ).await {
             Ok((st, body_inc)) => {
                 let text = http_body_to_string(body_inc).await;
+                crate::tunnel_client::tunnel_mark_success();
                 return Ok(UpResp { status: st, text });
             }
             Err(e) => {
-                // 隧道失败回落直连并降权该节点
+                // 隧道失败回落直连并降权该节点 + 记熔断
                 eprintln!("[upstream] tunnel failed, fallback direct: {e}");
                 crate::tunnel_client::mark_node_fail(port).await;
+                crate::tunnel_client::tunnel_mark_failure();
             }
         }
+    }
     }
     let resp = req.send().await.map_err(|e| format!("upstream: {e}"))?;
     let status = resp.status().as_u16();
@@ -283,9 +287,10 @@ async fn run_ads_round(base: &str, token: &str, throttle_secs: u64) {
                 .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
             if ad.status == 200 {
                 if let Some(imp) = imp_url {
-                    // 真实拉取广告资源 (服务端可能校验 impUrl 被请求过)
-                    let _ = up_at(base, "GET", &imp_url_path(&imp), token, None, &[],
-                        Duration::from_secs(8)).await;
+                    // impUrl 是第三方 CDN 完整 URL (非 codebuff API path) — 用 reqwest 直取, 不进 API 通道
+                    if imp.starts_with("http") {
+                        let _ = http().get(&imp).timeout(Duration::from_secs(8)).send().await;
+                    }
                     let ib = json!({"impUrl": imp, "mode": "free"});
                     let _ = up_at(base, "POST", "/api/v1/ads/impression", token, Some(&ib),
                         &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6)).await;
@@ -429,8 +434,8 @@ pub async fn ensure_session(
     )
     .await?;
     let data = r.json();
-    // create 被拒(409=已有活跃会话等) → 删现有 session → 重建一次 (根治 session_model_mismatch)
-    if r.status != 200 && r.status != 429 {
+    // create 被拒: 409=已有活跃会话(删旧重建安全); 403=池级拒绝(删了活的建不出新的→死活抖动, 保留旧会话)
+    if r.status != 200 && r.status != 429 && r.status != 403 {
         eprintln!("[session] create {} -> {}, try delete+recreate", session_model, r.status);
         if let Ok(cur) = get_session(base, token, None).await {
             if cur.status == 200 {
@@ -544,7 +549,8 @@ pub async fn chat_completions(
     instance_id: &str,
     payload: &Value,
 ) -> Result<ChatUpResp, String> {
-    // 隧道直连优先 — 主机跟 base (freebuff 账号不得拨到 codebuff)
+    // 隧道直连优先 — 熔断态跳过; 主机跟 base
+    if crate::tunnel_client::tunnel_ok() {
     if let Some((ob, port)) = crate::tunnel_client::tunnel_outbound().await {
         match crate::tunnel_client::request(
             ob, host_of(base), "POST", "/api/v1/chat/completions", token,
@@ -562,6 +568,7 @@ pub async fn chat_completions(
                 crate::tunnel_client::mark_node_fail(port).await;
             }
         }
+    }
     }
     let client = http().clone();
     let resp = client

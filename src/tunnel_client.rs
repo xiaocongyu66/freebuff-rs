@@ -165,6 +165,39 @@ pub async fn mark_node_fail(port: u16) {
     }
 }
 
+/// 隧道熔断: 连续失败后 60s 内直接走直连 (每请求都等满隧道超时是延迟爆炸根源)
+static TUNNEL_BREAKER: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, u32)>>> =
+    std::sync::OnceLock::new();
+
+fn breaker() -> &'static std::sync::Mutex<Option<(std::time::Instant, u32)>> {
+    TUNNEL_BREAKER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+pub fn tunnel_mark_failure() {
+    let mut b = breaker().lock().unwrap();
+    let (t, n) = b.unwrap_or((std::time::Instant::now(), 0));
+    *b = Some((t, n + 1)); // 3 连败 → 熔断 60s
+}
+
+pub fn tunnel_ok() -> bool {
+    let mut b = breaker().lock().unwrap();
+    match *b {
+        Some((t, n)) if n >= 3 => {
+            if t.elapsed() > std::time::Duration::from_secs(60) {
+                *b = Some((std::time::Instant::now(), 0)); // 半开: 重试
+                true
+            } else {
+                false
+            }
+        }
+        _ => true,
+    }
+}
+
+pub fn tunnel_mark_success() {
+    *breaker().lock().unwrap() = None;
+}
+
 /// 网关出站选择: FREEBUFF_PROXY 显式指定则用之; 否则自动挑未受限出口
 pub async fn tunnel_outbound() -> Option<(Arc<Outbound>, u16)> {
     let relay = tunnel_relay()?;
