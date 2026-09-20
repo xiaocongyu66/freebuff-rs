@@ -162,6 +162,16 @@ pub async fn execute_chat(
                 }
                 Ok(upstream::ChatUpResp { status, text, .. }) => {
                     pool.observe(&token, status, &text);
+                    // 耗尽/限流(429) → 删 session 重建 → 重试一次
+                    // (实测: recentCount 是 session 级滚动统计, 重建拉低; 若配额刷新真实存在则此路绕过)
+                    if status == 429 && attempt <= 2 {
+                        eprintln!("[chat] 429 -> drop session + recreate + retry");
+                        pool.drop_session(&token, &mc.session.as_str().to_string().as_str());
+                        if invalidate_run(&pool, &token, &mc.agent).await.is_ok() {
+                            continue;
+                        }
+                        continue;
+                    }
                     if status == 400 && text.contains("runId Not Running") && attempt <= 2 {
                         if invalidate_run(&pool, &token, &mc.agent).await.is_ok() {
                             continue;

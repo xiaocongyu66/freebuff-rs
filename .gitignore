@@ -6,5 +6,6 @@ freebuff_admin.json
 logs/
 admin-ui-src/target
 admin-ui/
-embedded/admin-ui/*
+embedded/admin-ui/**
+!embedded/admin-ui/
 !embedded/admin-ui/.gitkeep
