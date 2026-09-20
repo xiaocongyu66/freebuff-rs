@@ -121,13 +121,16 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> Json<Value> {
-    // 有实测可用集 (账号 session 实证) 则只列可用 — 免费层锁定的模型不展示
-    let avail = state.pool.available_models_list();
-    let ids: Vec<String> = if avail.is_empty() {
-        state.registry.list_ids()
-    } else {
-        avail
-    };
+    // 免费层默认可用集 ∪ 账号实测集 — 付费层模型不展示 (升级后实测集自动扩展)
+    let mut ids: Vec<String> = crate::models::FREE_TIER_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for m in state.pool.available_models_list() {
+        if !ids.contains(&m) {
+            ids.push(m);
+        }
+    }
     let data: Vec<Value> = ids
         .into_iter()
         .map(|id| json!({"id": id, "object": "model", "owned_by": "freebuff"}))

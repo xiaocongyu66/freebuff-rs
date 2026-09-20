@@ -119,8 +119,10 @@ impl Pool {
     }
 
     pub fn new(tokens_env: &str, accounts_json: &str) -> Self {
+        let init: std::collections::BTreeSet<String> =
+            crate::models::FREE_TIER_MODELS.iter().map(|s| s.to_string()).collect();
         Self {
-            available_models: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            available_models: std::sync::Mutex::new(init),
             accounts: std::sync::Mutex::new(parse_accounts(tokens_env, accounts_json)),
             idx: AtomicUsize::new(0),
             cooldowns: Mutex::new(HashMap::new()),

@@ -132,6 +132,15 @@ pub fn clamp_effort(allowed: &[&str], requested: &str) -> String {
     best.to_string()
 }
 
+/// 免费层实测可用模型 (rateLimitsByModel 实证, 2026-09-20):
+/// glm 看广告换量, 其余各 6 次/天。付费层模型不在其中 — /v1/models 与降级路由都以这为准。
+pub const FREE_TIER_MODELS: &[&str] = &[
+    "z-ai/glm-5.3-flash",
+    "deepseek/deepseek-v4-flash",
+    "mimo/mimo-v2.5",
+    "upstage/solar-pro4",
+];
+
 pub fn effort_allowed(model_id: &str) -> Vec<&'static str> {
     // 官方 efforts 表 (worker.js normalizeReasoningEffort 源, 2026-08-12):
     match model_id.rsplit('/').next().unwrap_or(model_id) {
