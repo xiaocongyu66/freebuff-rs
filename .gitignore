@@ -1,0 +1,6 @@
+/target
+*.sqlite
+usage.sqlite*
+freebuff_tokens.txt
+freebuff_admin.json
+logs/

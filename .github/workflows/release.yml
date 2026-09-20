@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm   # 原生 aarch64 — 产物与部署机架构一致
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --release
+        run: cargo build --release --bin freebuff-rs
+      - name: package
+        run: |
+          mkdir -p pkg/admin-ui
+          cp target/release/freebuff-rs pkg/
+          cp -r admin-ui/* pkg/admin-ui/ 2>/dev/null || true
+          tar czf freebuff-rs-linux-arm64.tar.gz -C pkg .
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: freebuff-rs-linux-arm64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freebuff-rs-linux-arm64
+          path: freebuff-rs-linux-arm64.tar.gz
