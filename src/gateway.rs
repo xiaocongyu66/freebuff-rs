@@ -22,11 +22,12 @@ fn error_response(status: u16, msg: &str) -> Response {
         .unwrap()
 }
 
-/// 会话保活: 每 45s GET session 刷新 expiresAt (对齐桌面端心跳); 失效(非200)即删缓存下次重建
+/// 会话保活: 5 分钟一轮, 只刷新临期 session (expires_at < 20min) — 盲目全量轮询
+/// 会触发上游 session 端点 IP 级限流(409), 反而打死正常请求 (v0.3.5 实测教训)。
 pub async fn session_heartbeat(pool: Arc<Pool>) {
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(45)).await;
-        let items = pool.all_sessions();
+        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        let items = pool.expiring_sessions(20 * 60 * 1000);
         if items.is_empty() {
             continue;
         }
@@ -40,11 +41,14 @@ pub async fn session_heartbeat(pool: Arc<Pool>) {
                         }
                     }
                 }
-                _ => {
-                    // session 已失效/排队超时 — 删缓存, 下次请求重建
+                // 404/401 = session 真失效; 409/429 = 限流 — 保留缓存别慌删
+                Ok(r) if r.status == 404 || r.status == 401 => {
                     pool.drop_session(&token, &model);
                 }
+                _ => {}
             }
+            // 间隔 2s 串行, 摊平请求
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     }
 }

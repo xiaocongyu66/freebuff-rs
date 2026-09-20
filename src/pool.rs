@@ -201,6 +201,18 @@ impl Pool {
             .collect()
     }
 
+    /// 临期 session (剩余 < within_ms) — 心跳只刷这些, 避免全量轮询触发上游限流
+    pub fn expiring_sessions(&self, within_ms: i64) -> Vec<(String, String, String)> {
+        let m = self.sessions.lock().unwrap();
+        let now = upstream::now_ms();
+        m.iter()
+            .filter(|(_, s)| s.expires_at_ms - now < within_ms && s.expires_at_ms > now)
+            .filter_map(|(k, s)| {
+                k.split_once(':').map(|(t, mo)| (t.to_string(), mo.to_string(), s.instance_id.clone()))
+            })
+            .collect()
+    }
+
     pub fn drop_session(&self, token: &str, model: &str) {
         self.sessions.lock().unwrap().remove(&Self::session_key(token, model));
     }
