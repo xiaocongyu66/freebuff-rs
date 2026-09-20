@@ -687,7 +687,5 @@ async fn keys_delete(
     *st.config.lock().unwrap() = cfg;
     st.sync_gateway_keys();
     st.logbus.push(&format!("[key] 删除 {key} 前缀 (剩 {remaining}个)"));
-    save_config(&cfg);
-    *st.config.lock().unwrap() = cfg;
     Json(json!({"ok": true}))
 }
