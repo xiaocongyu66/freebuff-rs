@@ -161,8 +161,8 @@ impl Pool {
         {
             let h = self.health.lock().unwrap();
             use_pool.sort_by(|a, b| {
-                let sa = h.get(&a.token).map(|x| x.score).unwrap_or(100);
-                let sb = h.get(&b.token).map(|x| x.score).unwrap_or(100);
+                let sa = h.get(&a.token).map(|x| x.score).unwrap_or(60);
+                let sb = h.get(&b.token).map(|x| x.score).unwrap_or(60);
                 sb.cmp(&sa)
             });
         }
@@ -230,7 +230,7 @@ impl Pool {
             state: "unknown".into(),
             uid: None,
             checked_at: Instant::now(),
-            score: 100,
+            score: 60,
         });
         entry.alive = Some(state == "ok");
         entry.state = state.to_string();
@@ -253,7 +253,7 @@ impl Pool {
                     "token": format!("{}...", &a.token[..a.token.len().min(8)]),
                     "alive": info.map(|i| i.alive),
                     "state": info.map(|i| i.state.as_str()).unwrap_or("unknown"),
-                    "score": info.map(|i| i.score).unwrap_or(100),
+                    "score": info.map(|i| i.score).unwrap_or(60),
                     "source": a.source,
                 })
             })

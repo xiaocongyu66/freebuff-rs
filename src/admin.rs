@@ -501,7 +501,7 @@ async fn accounts_probe(
         let mut h = st.pool.health.lock().unwrap();
         let entry = h.entry(token.clone()).or_insert_with(|| Health {
             alive: None, state: "unknown".into(), uid: None, checked_at: std::time::Instant::now(),
-            score: 100,
+            score: 60,
         });
         entry.alive = Some(alive);
         if let Some(s) = out["state"].as_str() {

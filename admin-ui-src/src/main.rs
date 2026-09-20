@@ -289,7 +289,7 @@ enum NodeFilter {
 #[component]
 fn Nodes() -> Element {
     let mut nodes: Signal<Vec<Value>> = use_signal(Vec::new);
-    let mut error: Signal<String> = use_signal(String::new);
+    let error: Signal<String> = use_signal(String::new);
     let mut probing: Signal<Option<u64>> = use_signal(|| None);
     let mut probes: Signal<HashMap<u64, Value>> = use_signal(HashMap::new);
     let mut filter: Signal<NodeFilter> = use_signal(|| NodeFilter::All);
@@ -1077,20 +1077,15 @@ fn App() -> Element {
 fn Usage() -> Element {
     let mut summary: Signal<Value> = use_signal(|| Value::Null);
     let mut recent: Signal<Value> = use_signal(|| Value::Null);
-    let mut hours = use_signal(|| 24i64);
 
-    let load = move |h: i64, s: &mut Signal<Value>, r: &mut Signal<Value>| {
-        let h = h;
-        spawn(async move {
-            if let Ok(v) = api_get(&format!("/admin/usage/summary?hours={h}")).await {
-                s.set(v);
-            }
-            if let Ok(v) = api_get("/admin/usage/recent?limit=30").await {
-                r.set(v);
-            }
-        });
-    };
-    use_future(move || async move { load(24, &mut summary, &mut recent); });
+    use_future(move || async move {
+        if let Ok(v) = api_get("/admin/usage/summary?hours=24").await {
+            summary.set(v);
+        }
+        if let Ok(v) = api_get("/admin/usage/recent?limit=30").await {
+            recent.set(v);
+        }
+    });
 
     let s = summary();
     let fmt_ts = |ts: i64| -> String {
