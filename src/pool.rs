@@ -27,6 +27,8 @@ pub struct Health {
 pub struct Pool {
     /// 实测可用模型集 (balance/probe 从 rateLimitsByModel 汇总)
     pub available_models: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// 模型额度耗尽: (token, model) → 冷却至 resetAt_ms — 撞额度切下一账号, 不连累同账号其他模型
+    pub model_exhausted: std::sync::Mutex<HashMap<(String, String), i64>>,
     pub accounts: std::sync::Mutex<Vec<Account>>,
     pub idx: AtomicUsize,
     /// token -> cooldown until (ms)
@@ -78,6 +80,23 @@ pub fn parse_accounts(tokens_env: &str, accounts_json: &str) -> Vec<Account> {
 }
 
 impl Pool {
+    /// 记录某账号某模型额度耗尽 (至重置时刻)
+    pub fn note_model_exhausted(&self, token: &str, model: &str, until_ms: i64) {
+        self.model_exhausted
+            .lock()
+            .unwrap()
+            .insert((token.to_string(), model.to_string()), until_ms);
+    }
+
+    /// 该账号该模型当前是否还有额度 (耗尽且未重置 → false)
+    pub fn model_has_quota(&self, token: &str, model: &str) -> bool {
+        let m = self.model_exhausted.lock().unwrap();
+        match m.get(&(token.to_string(), model.to_string())) {
+            Some(until) => upstream::now_ms() >= *until,
+            None => true,
+        }
+    }
+
     /// 记录实测可用模型 (取并集)
     pub fn note_available_models(&self, models: &[String]) {
         let mut set = self.available_models.lock().unwrap();
@@ -122,6 +141,7 @@ impl Pool {
         let init: std::collections::BTreeSet<String> =
             crate::models::FREE_TIER_MODELS.iter().map(|s| s.to_string()).collect();
         Self {
+            model_exhausted: std::sync::Mutex::new(HashMap::new()),
             available_models: std::sync::Mutex::new(init),
             accounts: std::sync::Mutex::new(parse_accounts(tokens_env, accounts_json)),
             idx: AtomicUsize::new(0),
@@ -205,7 +225,7 @@ impl Pool {
 
         if let Some(model) = session_model {
             for acct in &use_pool {
-                if self.in_cooldown(&acct.token) {
+                if self.in_cooldown(&acct.token) || !self.model_has_quota(&acct.token, model) {
                     continue;
                 }
                 if self.cached_session(&acct.token, model).is_some() {
@@ -216,7 +236,8 @@ impl Pool {
         let start = self.idx.fetch_add(1, Ordering::Relaxed);
         for k in 0..use_pool.len() {
             let acct = &use_pool[(start + k) % use_pool.len()];
-            if !self.in_cooldown(&acct.token) {
+            let quota_ok = session_model.map(|m| self.model_has_quota(&acct.token, m)).unwrap_or(true);
+            if !self.in_cooldown(&acct.token) && quota_ok {
                 return Some(acct.clone());
             }
         }

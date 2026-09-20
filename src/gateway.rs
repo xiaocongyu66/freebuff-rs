@@ -85,6 +85,15 @@ pub async fn execute_chat(
         // session (含缓存钉住)
         let cached = pool.cached_session(&token, session_model);
         let mut sess = match upstream::ensure_session(base, &token, session_model, &cached, false).await {
+            Ok(s) => {
+                // 撞额度: (token, model) 冷却至重置 — pick 自动切下一账号
+                for (m, until) in &s.exhausted_models {
+                    if m == session_model {
+                        pool.note_model_exhausted(&token, m, *until);
+                    }
+                }
+                s
+            }
             Ok(s) => s,
             Err(e) => {
                 last_err = e;

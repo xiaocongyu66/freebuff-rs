@@ -311,6 +311,8 @@ pub struct Session {
     pub model: String,
     pub instance_id: String,
     pub expires_at_ms: i64,
+    /// 本次响应里额度耗尽的 (model, resetAt_ms) — 供池按模型冷却跳过
+    pub exhausted_models: Vec<(String, i64)>,
 }
 
 pub fn is_usable_session(s: &Option<Session>) -> bool {
@@ -329,6 +331,21 @@ fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
     if status != "active" {
         return None;
     }
+    // 额度耗尽追踪: remaining == 0 的模型记 (model, resetAt_ms)
+    let mut exhausted_models: Vec<(String, i64)> = Vec::new();
+    if let Some(rl) = data["rateLimitsByModel"].as_object() {
+        for (m, v) in rl {
+            let remaining = v["remaining"].as_i64()
+                .or_else(|| v["limit"].as_i64().map(|l| l - v["recentCount"].as_i64().unwrap_or(0)));
+            if remaining == Some(0) {
+                let reset = v["resetAt"].as_str()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map(|d| d.timestamp_millis())
+                    .unwrap_or_else(|| now_ms() + 24 * 3600 * 1000);
+                exhausted_models.push((m.clone(), reset));
+            }
+        }
+    }
     let expires_at_ms = if let Some(t) = data["expiresAt"].as_str() {
         chrono::DateTime::parse_from_rfc3339(t)
             .ok()
@@ -342,6 +359,7 @@ fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
         model: data["model"].as_str().unwrap_or(requested_model).to_string(),
         instance_id,
         expires_at_ms: expires_at_ms.unwrap_or(0),
+        exhausted_models,
     })
 }
 
