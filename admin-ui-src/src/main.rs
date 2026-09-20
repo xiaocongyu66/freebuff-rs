@@ -843,6 +843,7 @@ fn open_new_tab(url: &str) {
 
 #[component]
 fn AccountRow(d: Value, mut probe: Signal<Option<Value>>, mut probing: Signal<Option<String>>, on_changed: EventHandler<Value>) -> Element {
+    let mut acc_confirm_open = use_signal(|| false);
     let head = d["token"].as_str().unwrap_or("").to_string();
     let head_query = head.trim_end_matches("...").to_string();
     let is_probing = probing() == Some(head_query.clone());
@@ -870,14 +871,16 @@ fn AccountRow(d: Value, mut probe: Signal<Option<Value>>, mut probing: Signal<Op
                     },
                     if is_probing { "查询中" } else { "受限查询" } }
                 Button { variant: ButtonVariant::Ghost, class: "h-7 rounded-sm text-xs text-down",
-                    on_click: move |_| {
+                    on_click: move |_| acc_confirm_open.set(true),
+                    "删除" }
+                ConfirmDeleteDialog { open: acc_confirm_open, title: "删除账号".to_string(), target: d["token"].as_str().unwrap_or("").to_string(),
+                    on_confirm: move |_| {
                         let hd = head_del.clone();
                         spawn(async move {
                             let _ = api_send("DELETE", &format!("/admin/accounts/{hd}"), None).await;
                             on_changed.call(Value::Null);
                         });
-                    },
-                    "删除" }
+                    } }
             }
         }
     }
@@ -892,6 +895,7 @@ fn Keys() -> Element {
     let mut keys: Signal<Vec<Value>> = use_signal(Vec::new);
     let mut new_key: Signal<Option<String>> = use_signal(|| None);
     let mut copied: Signal<bool> = use_signal(|| false);
+    let mut create_open = use_signal(|| false);
 
     let load = move |mut keys: Signal<Vec<Value>>| {
         spawn(async move {
@@ -907,15 +911,9 @@ fn Keys() -> Element {
         div { class: "border border-line bg-white p-5",
             Button { variant: ButtonVariant::Primary, class: "h-8 rounded-sm",
                 icon_left: rsx! { Plus { class: "size-3.5" } },
-                on_click: move |_| {
-                    spawn(async move {
-                        if let Ok(v) = api_send("POST", "/admin/keys", None).await {
-                            new_key.set(v["key"].as_str().map(String::from));
-                            copied.set(false);
-                        }
-                    });
-                },
+                on_click: move |_| create_open.set(true),
                 "签发新 Key" }
+            KeyCreateDialog { open: create_open, new_key, copied, on_created: move |_| load(keys) }
             if let Some(k) = new_key() {
                 div { class: "mt-4 border-l-[3px] border-alive bg-alive/[0.06] px-4 py-3",
                     div { class: "text-xs text-ink/55", "新 Key 只完整显示这一次" }
@@ -946,9 +944,115 @@ fn Keys() -> Element {
 }
 
 #[component]
+/// 创建 Key 弹窗: 输入名字后签发 (空名后端自动编号)
+#[component]
+fn KeyCreateDialog(
+    mut open: Signal<bool>,
+    mut new_key: Signal<Option<String>>,
+    mut copied: Signal<bool>,
+    on_created: EventHandler<Value>,
+) -> Element {
+    let mut name = use_signal(String::new);
+    let mut creating = use_signal(|| false);
+
+    if !open() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "fixed inset-0 z-40 flex items-center justify-center bg-ink/45 p-4",
+            div { class: "w-full max-w-md border border-line bg-white",
+                div { class: "flex items-center justify-between border-b border-line px-4 py-3",
+                    span { class: "text-sm font-semibold text-ink", "签发新 API Key" }
+                    button {
+                        class: "text-lg leading-none text-ink/50 hover:text-ink",
+                        onclick: move |_| open.set(false),
+                        "×" }
+                }
+                div { class: "px-4 py-4",
+                    label { class: "flex flex-col gap-1.5 text-xs text-ink/55",
+                        "名字 (如: my-phone, 可留空自动编号)"
+                        input {
+                            class: "h-9 border border-line px-3 text-sm text-ink placeholder:text-ink/30 focus:border-ink focus:outline-none",
+                            placeholder: "key-1",
+                            value: name(),
+                            oninput: move |e| name.set(e.value()),
+                        }
+                    }
+                    div { class: "mt-4 flex justify-end gap-2",
+                        Button { variant: ButtonVariant::Outline, class: "h-9 rounded-sm",
+                            on_click: move |_| open.set(false),
+                            "取消" }
+                        Button { variant: ButtonVariant::Primary, class: "h-9 rounded-sm",
+                            disabled: creating(),
+                            on_click: move |_| {
+                                creating.set(true);
+                                let body = if name().trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(serde_json::json!({"name": name().trim()}))
+                                };
+                                spawn(async move {
+                                    if let Ok(v) = api_send("POST", "/admin/keys", body).await {
+                                        new_key.set(v["key"].as_str().map(String::from));
+                                        copied.set(false);
+                                        open.set(false);
+                                        name.set(String::new());
+                                        on_created.call(Value::Null);
+                                    }
+                                    creating.set(false);
+                                });
+                            },
+                            if creating() { "签发中…" } else { "签发" } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 删除确认弹窗 (通用): 显示目标名, 确认后才执行
+#[component]
+fn ConfirmDeleteDialog(
+    mut open: Signal<bool>,
+    title: String,
+    target: String,
+    on_confirm: EventHandler<()>,
+) -> Element {
+    if !open() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "fixed inset-0 z-40 flex items-center justify-center bg-ink/45 p-4",
+            div { class: "w-full max-w-sm border border-line bg-white",
+                div { class: "border-b border-line px-4 py-3",
+                    span { class: "text-sm font-semibold text-ink", {title} }
+                }
+                div { class: "px-4 py-4",
+                    p { class: "text-sm text-ink/70", "即将删除:" }
+                    p { class: "mt-1 border-l-[3px] border-down bg-down/[0.06] px-3 py-1.5 text-sm text-ink", {target} }
+                    p { class: "mt-2 text-xs text-ink/45", "此操作不可撤销。" }
+                    div { class: "mt-4 flex justify-end gap-2",
+                        Button { variant: ButtonVariant::Outline, class: "h-9 rounded-sm",
+                            on_click: move |_| open.set(false),
+                            "取消" }
+                        Button { variant: ButtonVariant::Primary, class: "h-9 rounded-sm bg-down text-white hover:bg-down/90",
+                            on_click: move |_| {
+                                open.set(false);
+                                on_confirm.call(());
+                            },
+                            "确认删除" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
     let key = k["key"].as_str().unwrap_or("").to_string();
     let masked = mask_key(&key);
+    let mut confirm_open = use_signal(|| false);
     rsx! {
         Row {
             left: rsx! {
@@ -959,14 +1063,16 @@ fn KeyRow(k: Value, on_changed: EventHandler<Value>) -> Element {
             },
             right: rsx! {
                 Button { variant: ButtonVariant::Ghost, class: "h-7 rounded-sm text-xs text-down",
-                    on_click: move |_| {
+                    on_click: move |_| confirm_open.set(true),
+                    "删除" }
+                ConfirmDeleteDialog { open: confirm_open, title: "删除 API Key".to_string(), target: k["name"].as_str().unwrap_or("").to_string(),
+                    on_confirm: move |_| {
                         let key = key.clone();
                         spawn(async move {
                             let _ = api_send("DELETE", &format!("/admin/keys/{key}"), None).await;
-                            on_changed.call(Value::Null);
                         });
-                    },
-                    "删除" }
+                        on_changed.call(Value::Null);
+                    } }
             }
         }
     }
