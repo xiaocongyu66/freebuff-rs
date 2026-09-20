@@ -64,6 +64,10 @@ fn parse_cooldown(text: &str, status: u16) -> i64 {
         }
     }
     if status == 403 || text.contains("banned") {
+        // free_mode_unavailable = 当日免费模式关闭, 额度重置(美西07:00)即恢复 — 不按 banned 冷却 24h
+        if text.contains("free_mode_unavailable") {
+            return 3 * 3600 * 1000;
+        }
         return 24 * 3600 * 1000;
     }
     30_000
