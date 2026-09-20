@@ -163,8 +163,8 @@ pub async fn execute_chat(
                 Ok(upstream::ChatUpResp { status, text, .. }) => {
                     pool.observe(&token, status, &text);
                     // 耗尽/限流(429) → 删 session 重建 → 重试一次
-                    // (实测: recentCount 是 session 级滚动统计, 重建拉低; 若配额刷新真实存在则此路绕过)
-                    if status == 429 && attempt <= 2 {
+                    // glm 例外: reward 池对会话重置不敏感, 固定会话即可 (重建反而打乱 rhythm)
+                    if status == 429 && attempt <= 2 && !session_model.contains("glm") {
                         eprintln!("[chat] 429 -> drop session + recreate + retry");
                         pool.drop_session(&token, &mc.session.as_str().to_string().as_str());
                         if invalidate_run(&pool, &token, &mc.agent).await.is_ok() {
@@ -179,7 +179,12 @@ pub async fn execute_chat(
                         {
                             continue;
                         }
-                        // ② 其他 400: session 侧问题 (假页/坏流) — 删会话重建, 别连吃 3 次
+                        // ② 其他 400: session 侧问题 (假页/坏流) — 删会话重建 (glm 除外, 固定会话)
+                        if session_model.contains("glm") {
+                            // glm: 只重开 run, 不动会话
+                            let _ = invalidate_run(&pool, &token, &mc.agent).await;
+                            continue;
+                        }
                         eprintln!("[chat] 400 -> drop session + recreate + retry");
                         pool.drop_session(&token, session_model);
                         match upstream::ensure_session(base, &token, session_model, &None, true).await {
