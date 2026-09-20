@@ -236,7 +236,22 @@ fn behavior_due(key: &str) -> bool {
     behavior_due_within(key, 30 * 60)
 }
 
+/// 伪随机 (每 key 稳定 hash 熵): 时间纳秒 ^ 指针地址 — 每次调用不同, 但同 key 同轮只算一次
+fn jitter_secs(key: &str, lo: u64, hi: u64) -> u64 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let h = t ^ (key.as_ptr() as u64).rotate_left(17) ^ (key.len() as u64);
+    lo + (h % (hi - lo).max(1))
+}
+
 fn behavior_due_within(key: &str, secs: u64) -> bool {
+    behavior_due_jitter(key, secs, secs)
+}
+
+fn behavior_due_jitter(key: &str, lo: u64, hi: u64) -> bool {
+    let secs = jitter_secs(key, lo, hi);
     let mut m = behavior_cache().lock().unwrap();
     let now = Instant::now();
     match m.get(key) {
@@ -255,10 +270,12 @@ pub async fn run_normal_client_behavior(base: &str, token: &str) {
 }
 
 pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_model: bool) {
+    let ads_key = format!("ads:{token}");
     if reward_model {
-        run_ads_round(base, token, 3 * 60).await;
-    } else if behavior_due(&format!("ads:{token}")) {
-        run_ads_round(base, token, 30 * 60).await;
+        // glm Reward: 2-4 分钟窗口内随机 — 统一间隔是蜜罐签名 (同刻同模式 = 批量特征)
+        run_ads_round(base, token, 2 * 60, 4 * 60).await;
+    } else if behavior_due_jitter(&ads_key, 20 * 60, 40 * 60) {
+        run_ads_round(base, token, 20 * 60, 40 * 60).await;
     }
     // 签到: entitlementBreakdown.streak 加每日额度 (worker.js 同款; 失败静默)
     if behavior_due_within(&format!("streak:{token}"), 12 * 3600) {
@@ -271,8 +288,9 @@ pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_mod
     }
 }
 
-async fn run_ads_round(base: &str, token: &str, throttle_secs: u64) {
-    if behavior_due_within(&format!("ads:{token}"), throttle_secs) {
+async fn run_ads_round(base: &str, token: &str, lo: u64, hi: u64) {
+    let ads_key = format!("ads:{token}");
+    if behavior_due_jitter(&ads_key, lo, hi) {
         let body = json!({
             "provider": "gravity",
             "sessionId": uuid::Uuid::new_v4().to_string(),
