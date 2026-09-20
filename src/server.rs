@@ -209,11 +209,16 @@ async fn chat_completions(
     let model = model_upstream.rsplit('/').next().unwrap_or(&model_upstream).to_string();
     let pt = usage.as_ref().and_then(|u| u["prompt_tokens"].as_u64()).unwrap_or(0).max(1);
     let ct = usage.as_ref().and_then(|u| u["completion_tokens"].as_u64()).unwrap_or_else(|| protocol::now_secs() % 7 + 10);
+    let cached = usage.as_ref().and_then(|u| {
+        u["prompt_tokens_details"]["cached_tokens"].as_u64()
+            .or_else(|| u["cache_read_input_tokens"].as_u64())
+    }).unwrap_or(0);
     crate::usage::record(&serde_json::json!({
         "ts": protocol::now_secs() * 1000, "model": model, "source": "",
         "account_head": "", "stream": false, "status": 200,
         "prompt_tokens": pt, "completion_tokens": ct,
         "latency_ms": started.elapsed().as_millis() as u64, "error": "",
+        "cached_tokens": cached,
     }));
     state.logbus.push(&format!(
         "[chat] {} {}+{} tok / {}ms",
