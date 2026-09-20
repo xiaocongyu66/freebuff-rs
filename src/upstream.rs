@@ -256,6 +256,11 @@ pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_mod
     } else if behavior_due(&format!("ads:{token}")) {
         run_ads_round(base, token, 30 * 60).await;
     }
+    // 签到: entitlementBreakdown.streak 加每日额度 (worker.js 同款; 失败静默)
+    if behavior_due_within(&format!("streak:{token}"), 12 * 3600) {
+        let _ = up_at(base, "GET", "/api/v1/freebuff/streak", token, None, &[],
+            Duration::from_secs(6)).await;
+    }
     if behavior_due(&format!("usage:{token}")) {
         let body = json!({"fingerprintId": stable_fingerprint(token)});
         let _ = up_at(base, "POST", "/api/v1/usage", token, Some(&body), &[], Duration::from_secs(6)).await;
@@ -392,8 +397,13 @@ pub async fn ensure_session(
     cached: &Option<Session>,
     force_create: bool,
 ) -> Result<Session, String> {
+    // 官方 worker 语义: 广告/签到在 session 创建前发起, 但失败静默跳过不阻塞聊天 → 异步 fire-and-forget
+    let base_s = base.to_string();
+    let token_s = token.to_string();
     let is_reward_model = session_model.contains("glm");
-    run_normal_client_behavior_freq(base, token, is_reward_model).await;
+    tokio::spawn(async move {
+        run_normal_client_behavior_freq(&base_s, &token_s, is_reward_model).await;
+    });
     if !force_create && is_usable_session(cached) {
         return Ok(cached.clone().unwrap());
     }
