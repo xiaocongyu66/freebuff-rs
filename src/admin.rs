@@ -45,6 +45,9 @@ pub struct AdminConfig {
     /// 节点受限记忆: 端口 → [受限, 国家]
     #[serde(default)]
     pub node_restriction: std::collections::HashMap<u16, (bool, String)>,
+    /// 账号自定义命名: token → 别名 (两渠道通用)
+    #[serde(default)]
+    pub account_alias: std::collections::HashMap<String, String>,
 }
 
 pub fn config_path() -> std::path::PathBuf {
@@ -64,11 +67,51 @@ pub fn save_config(cfg: &AdminConfig) {
     let _ = std::fs::write(config_path(), serde_json::to_string_pretty(cfg).unwrap_or_default());
 }
 
+/// 日志总线: ring 回放 + 广播增量 (SSE)
+pub struct LogBus {
+    ring: std::sync::Mutex<std::collections::VecDeque<String>>,
+    tx: tokio::sync::broadcast::Sender<String>,
+}
+
+impl LogBus {
+    pub fn new() -> Self {
+        let (tx, _) = tokio::sync::broadcast::channel(256);
+        Self { ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(500)), tx }
+    }
+    pub fn push(&self, line: &str) {
+        let ts = chrono::Utc::now().format("%H:%M:%S");
+        let line = format!("[{ts}] {line}");
+        {
+            let mut r = self.ring.lock().unwrap();
+            if r.len() >= 500 { r.pop_front(); }
+            r.push_back(line.clone());
+        }
+        let _ = self.tx.send(line);
+    }
+    pub fn replay(&self) -> Vec<String> {
+        self.ring.lock().unwrap().iter().cloned().collect()
+    }
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.tx.subscribe()
+    }
+}
+
 pub struct AdminState {
     pub pool: Arc<Pool>,
     pub config: std::sync::Mutex<AdminConfig>,
     pub relay: Arc<crate::relay::Relay>,
     pub auth_flows: Arc<crate::auth_flow::AuthFlows>,
+    pub logbus: std::sync::Arc<LogBus>,
+    /// 网关鉴权 keys 缓存 — admin 增删/启停时同步 (server 侧读它鉴权)
+    pub gateway_keys: std::sync::Arc<std::sync::Mutex<Vec<KeyEntry>>>,
+}
+
+impl AdminState {
+    /// 把 cfg.keys 同步进网关缓存
+    pub fn sync_gateway_keys(&self) {
+        let keys = self.config.lock().unwrap().keys.clone();
+        *self.gateway_keys.lock().unwrap() = keys;
+    }
 }
 
 pub fn now() -> u64 {
@@ -147,6 +190,9 @@ pub async fn router(state: Arc<AdminState>) -> axum::Router {
         .route("/admin/accounts", axum::routing::get(accounts_list).post(accounts_add))
         .route("/admin/accounts/{token_head}/source", axum::routing::patch(accounts_move_pool))
         .route("/admin/accounts/{token_head}/balance", axum::routing::get(accounts_balance))
+        .route("/admin/accounts/{token_head}/alias", axum::routing::patch(accounts_alias))
+        .route("/admin/keys/{key}/toggle", axum::routing::patch(key_toggle))
+        .route("/admin/logs/stream", axum::routing::get(logs_stream))
         .route("/admin/usage/summary", axum::routing::get(usage_summary))
         .route("/admin/usage/recent", axum::routing::get(usage_recent))
         .route("/admin/tokens/import", axum::routing::post(tokens_import))
@@ -371,7 +417,7 @@ async fn accounts_add(
         return Err(err(StatusCode::BAD_REQUEST, "token too short"));
     }
     let provider = body["provider"].as_str().unwrap_or("freebuff").to_string();
-    st.pool.accounts.lock().unwrap().push(Account { token: token.clone(), uid: None, source: provider.clone() });
+    st.pool.accounts.lock().unwrap().push(Account { token: token.clone(), uid: None, source: provider.clone(), alias: String::new() });
     let mut cfg = load_config();
     cfg.account_sources.insert(token.clone(), provider);
     save_config(&cfg);
@@ -416,6 +462,88 @@ async fn accounts_move_pool(
         return Err(err(StatusCode::NOT_FOUND, "account not found"));
     }
     Ok(Json(json!({"ok": true, "moved": moved})))
+}
+
+/// 账号别名: body {"name": "主号"} — 两渠道账号均可命名
+async fn accounts_alias(
+    State(st): State<Arc<AdminState>>,
+    axum::extract::Path(token_head): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, Response> {
+    let name = body["name"].as_str().unwrap_or("").trim().to_string();
+    if name.len() > 32 {
+        return Err(err(StatusCode::BAD_REQUEST, "name too long (max 32)"));
+    }
+    // 全量 token 找到才可持久化完整键 (head 匹配可能多个 — 全部改)
+    let full_tokens: Vec<String> = {
+        let accs = st.pool.accounts.lock().unwrap();
+        accs.iter().filter(|a| a.token.starts_with(&token_head)).map(|a| a.token.clone()).collect()
+    };
+    if full_tokens.is_empty() {
+        return Err(err(StatusCode::NOT_FOUND, "account not found"));
+    }
+    st.pool.set_alias(&token_head, &name);
+    let mut cfg = load_config();
+    for t in &full_tokens {
+        if name.is_empty() {
+            cfg.account_alias.remove(t);
+        } else {
+            cfg.account_alias.insert(t.clone(), name.clone());
+        }
+    }
+    save_config(&cfg);
+    *st.config.lock().unwrap() = cfg;
+    st.logbus.push(&format!("[account] 改名 {token_head}… → {name}"));
+    Ok(Json(json!({"ok": true, "renamed": full_tokens.len()})))
+}
+
+/// Key 启用/禁用: body {"enabled": bool} — 禁用后网关拒绝该 key (401)
+async fn key_toggle(
+    State(st): State<Arc<AdminState>>,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, Response> {
+    let enabled = body["enabled"].as_bool().unwrap_or(true);
+    let mut cfg = load_config();
+    let found = cfg.keys.iter_mut().find(|k| k.key == key).map(|k| {
+        k.enabled = enabled;
+        k.name.clone()
+    });
+    match found {
+        Some(kname) => {
+            save_config(&cfg);
+            *st.config.lock().unwrap() = cfg;
+            // 同步网关鉴权缓存
+            st.sync_gateway_keys();
+            st.logbus.push(&format!("[key] {} {}", kname, if enabled { "已启用" } else { "已禁用" }));
+            Ok(Json(json!({"ok": true, "enabled": enabled})))
+        }
+        None => Err(err(StatusCode::NOT_FOUND, "key not found")),
+    }
+}
+
+/// 实时日志 SSE: ring buffer 回放 + 增量推送
+async fn logs_stream(
+    State(st): State<Arc<AdminState>>,
+) -> axum::response::Response {
+    use axum::response::sse::{Event, Sse};
+    let mut rx = st.logbus.subscribe();
+    let replay = st.logbus.replay();
+    let stream = async_stream::stream! {
+        for line in replay {
+            yield Ok::<_, std::convert::Infallible>(Event::default().data(line));
+        }
+        loop {
+            match rx.recv().await {
+                Ok(line) => yield Ok::<_, std::convert::Infallible>(Event::default().data(line)),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 async fn usage_summary(
@@ -534,14 +662,17 @@ async fn keys_add(
     let mut cfg = load_config();
     let key = format!("fb-{}", uuid::Uuid::new_v4().simple());
     let key_name = if name.is_empty() { format!("key-{}", cfg.keys.len() + 1) } else { name };
+    let key_count = cfg.keys.len() + 1;
     cfg.keys.push(KeyEntry {
         key: key.clone(),
-        name: key_name,
+        name: key_name.clone(),
         enabled: true,
         created_at: now(),
     });
     save_config(&cfg);
     *st.config.lock().unwrap() = cfg;
+    st.sync_gateway_keys();
+    st.logbus.push(&format!("[key] 签发 {key_name} ({key_count}个)"));
     Ok(Json(json!({"ok": true, "key": key})))
 }
 
@@ -551,6 +682,11 @@ async fn keys_delete(
 ) -> Json<Value> {
     let mut cfg = load_config();
     cfg.keys.retain(|k| k.key != key);
+    let remaining = cfg.keys.len();
+    save_config(&cfg);
+    *st.config.lock().unwrap() = cfg;
+    st.sync_gateway_keys();
+    st.logbus.push(&format!("[key] 删除 {key} 前缀 (剩 {remaining}个)"));
     save_config(&cfg);
     *st.config.lock().unwrap() = cfg;
     Json(json!({"ok": true}))

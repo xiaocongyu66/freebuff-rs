@@ -1,17 +1,21 @@
 //! 账号池: 轮换 + 冷却 + session 钉住 + 健康观测 (worker.js pickToken/recordAccountObservation 语义)。
 use crate::upstream::{self, Session};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub token: String,
     pub uid: Option<String>,
-    /// 授权来源: "freebuff" | "codebuff" — 两个账号池分开
+    /// 授权来源: "freebuff" | "codebuff" — 元数据; 池子整体轮询不按 source 分裂
     pub source: String,
+    /// 自定义命名 (两渠道账号均可命名, 空 = 显示 token 前缀)
+    #[serde(default)]
+    pub alias: String,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +58,7 @@ pub fn parse_accounts(tokens_env: &str, accounts_json: &str) -> Vec<Account> {
                             token,
                             uid: a["uid"].as_str().map(String::from),
                             source: a["source"].as_str().unwrap_or("").to_string(),
+                            alias: a["alias"].as_str().unwrap_or("").to_string(),
                         })
                     })
                     .collect();
@@ -72,14 +77,28 @@ pub fn parse_accounts(tokens_env: &str, accounts_json: &str) -> Vec<Account> {
                 token: s[..i].trim().to_string(),
                 uid: Some(s[i + 1..].trim().to_string()).filter(|u| !u.is_empty()),
                 source: String::new(),
+                alias: String::new(),
             },
-            _ => Account { token: s.to_string(), uid: None, source: String::new() },
+            _ => Account { token: s.to_string(), uid: None, source: String::new(), alias: String::new() },
         })
         .filter(|a| a.token.len() > 8)
         .collect()
 }
 
 impl Pool {
+    /// 设置账号别名 (两渠道通用)
+    pub fn set_alias(&self, token_head: &str, alias: &str) -> bool {
+        let mut accs = self.accounts.lock().unwrap();
+        let mut hit = false;
+        for a in accs.iter_mut() {
+            if a.token.starts_with(token_head) {
+                a.alias = alias.to_string();
+                hit = true;
+            }
+        }
+        hit
+    }
+
     /// 记录某账号某模型额度耗尽 (至重置时刻)
     pub fn note_model_exhausted(&self, token: &str, model: &str, until_ms: i64) {
         self.model_exhausted
@@ -322,6 +341,7 @@ impl Pool {
                     "state": info.map(|i| i.state.as_str()).unwrap_or("unknown"),
                     "score": info.map(|i| i.score).unwrap_or(60),
                     "source": a.source,
+                    "alias": a.alias,
                 })
             })
             .collect();

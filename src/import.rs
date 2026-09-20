@@ -94,6 +94,7 @@ pub fn import_into_pool(pool: &std::sync::Arc<crate::pool::Pool>, text: &str) ->
             token: t.clone(),
             uid: None,
             source: "freebuff".into(),
+            alias: String::new(),
         });
         imported.push(format!("{}...", &t[..8.min(t.len())]));
         let mut tokens = crate::creds::load_tokens();

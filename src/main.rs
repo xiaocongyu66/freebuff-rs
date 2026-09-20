@@ -110,7 +110,16 @@ async fn serve() {
         }
     });
 
-    let state = server::AppState { pool: pool.clone(), registry, api_key, sem: Arc::new(semaphore::TieredSemaphore::defaults()) };
+    let logbus = Arc::new(admin::LogBus::new());
+    let gateway_keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let state = server::AppState {
+        pool: pool.clone(),
+        registry,
+        api_key,
+        sem: Arc::new(semaphore::TieredSemaphore::defaults()),
+        gateway_keys: Arc::clone(&gateway_keys),
+        logbus: Arc::clone(&logbus),
+    };
     let relay = Arc::new(relay::Relay::new());
     tunnel_client::set_relay(relay.clone());
     let auth_flows = Arc::new(auth_flow::AuthFlows::new());
@@ -123,7 +132,28 @@ async fn serve() {
         let pool_hb = std::sync::Arc::clone(&pool);
         tokio::spawn(async move { gateway::session_heartbeat(pool_hb).await });
     }
-    let admin_state = Arc::new(admin::AdminState { pool, config: std::sync::Mutex::new(admin::load_config()), relay: relay.clone(), auth_flows });
+    let cfg0 = admin::load_config();
+    // 回填账号别名 (两渠道通用)
+    {
+        let aliases = cfg0.account_alias.clone();
+        if !aliases.is_empty() {
+            let mut accs = pool.accounts.lock().unwrap();
+            for a in accs.iter_mut() {
+                if let Some(al) = aliases.get(&a.token) {
+                    a.alias = al.clone();
+                }
+            }
+        }
+    }
+    *gateway_keys.lock().unwrap() = cfg0.keys.clone();
+    let admin_state = Arc::new(admin::AdminState {
+        pool,
+        config: std::sync::Mutex::new(cfg0),
+        relay: relay.clone(),
+        auth_flows,
+        logbus: Arc::clone(&logbus),
+        gateway_keys: Arc::clone(&gateway_keys),
+    });
     // 回填节点受限记忆 (端口 → 已测出的 restricted/country)
     {
         let restrictions = admin::load_config().node_restriction;

@@ -17,9 +17,73 @@ pub struct AppState {
     pub api_key: Option<String>,
     /// 双桶并发信号量 (免费 {槽1,并发3} / 订阅 {槽3,并发8})
     pub sem: Arc<crate::semaphore::TieredSemaphore>,
+    /// 管理台签发的 keys (enabled 才放行) — 与 admin 共享
+    pub gateway_keys: std::sync::Arc<std::sync::Mutex<Vec<crate::admin::KeyEntry>>>,
+    /// 日志总线
+    pub logbus: std::sync::Arc<crate::admin::LogBus>,
 }
 
 fn check_auth(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), Response> {
+    let got = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|a| a.strip_prefix("Bearer "))
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+    // ① 管理台签发的 keys (enabled 才有效)
+    if let Some(k) = got {
+        let keys = state.gateway_keys.lock().unwrap();
+        if let Some(e) = keys.iter().find(|e| &e.key == k) {
+            return if e.enabled {
+                Ok(())
+            } else {
+                Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": {"message": "api key disabled", "type": "auth_error"}})),
+                )
+                    .into_response())
+            };
+        }
+    }
+    // ② env 兼容 (sk-test / FREEBUFF_API_KEY)
+    if let Some(expected) = &state.api_key {
+        if got == Some(expected.as_str()) {
+            return Ok(());
+        }
+    }
+    {
+        if let Some(expected) = &state.api_key {
+            let _ = expected;
+        }
+    }
+    if let Some(expected) = &state.api_key {
+        let got2 = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|a| a.strip_prefix("Bearer "))
+            .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+        let _ = got2;
+        let _ = expected;
+    }
+    // 未命中任何 key
+    {
+        let matched_env = state
+            .api_key
+            .as_ref()
+            .map(|e| got == Some(e.as_str()))
+            .unwrap_or(false);
+        if !matched_env {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": {"message": "invalid api key", "type": "auth_error"}})),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn check_auth_old(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), Response> {
     if let Some(expected) = &state.api_key {
         let got = headers
             .get("authorization")
@@ -191,6 +255,10 @@ async fn chat_completions(
         "prompt_tokens": pt, "completion_tokens": ct,
         "latency_ms": started.elapsed().as_millis() as u64, "error": "",
     }));
+    state.logbus.push(&format!(
+        "[chat] {} {}+{} tok / {}ms",
+        model, pt, ct, started.elapsed().as_millis()
+    ));
     Json(protocol::oa_text_response(&model, &content, &reasoning, pt, ct, finish)).into_response()
 }
 

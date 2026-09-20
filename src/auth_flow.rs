@@ -140,6 +140,7 @@ pub async fn poll(
                 token: auth_token.clone(),
                 uid: user["id"].as_str().map(String::from),
                 source: source.to_string(),
+                alias: String::new(),
             });
             // 关键: 持久化来源, 否则重启回填默认 codebuff 会混池
             let mut cfg = crate::admin::load_config();
