@@ -1,0 +1,19 @@
+[package]
+name = "docsite"
+authors = ["Daniel D’Aquino <daniel@daquino.me>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dioxus = { workspace = true, features = ["router"] }
+lumen-blocks.workspace = true
+lucide-dioxus = { workspace = true, features = ["all-icons"] }
+dioxus-sdk-time.workspace = true
+docs.workspace = true
+mdbook-shared.workspace = true
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+analytics = []
