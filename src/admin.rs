@@ -459,6 +459,13 @@ async fn accounts_balance(
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
     let d = sess.json().unwrap_or(Value::Null);
+    // 汇总实测可用模型 (rateLimitsByModel 键集)
+    if let Some(rl) = d["rateLimitsByModel"].as_object() {
+        let models: Vec<String> = rl.keys().cloned().collect();
+        if !models.is_empty() {
+            st.pool.note_available_models(&models);
+        }
+    }
     Ok(Json(json!({
         "source": source,
         "accessTier": d["accessTier"],

@@ -121,9 +121,14 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let data: Vec<Value> = state
-        .registry
-        .list_ids()
+    // 有实测可用集 (账号 session 实证) 则只列可用 — 免费层锁定的模型不展示
+    let avail = state.pool.available_models_list();
+    let ids: Vec<String> = if avail.is_empty() {
+        state.registry.list_ids()
+    } else {
+        avail
+    };
+    let data: Vec<Value> = ids
         .into_iter()
         .map(|id| json!({"id": id, "object": "model", "owned_by": "freebuff"}))
         .collect();

@@ -51,10 +51,23 @@ pub async fn execute_chat(
     params: &Value,
     model_id: &str,
 ) -> Result<ExecResult, Response> {
+    // 模型可用性路由: 请求了实测不可用的模型 → 自动降级到能用的 (同家族优先)
+    let mut model_id = model_id.to_string();
+    if let Some(fallback) = pool.fallback_model(&model_id) {
+        eprintln!("[chat] model fallback: {model_id} -> {fallback}");
+        model_id = fallback;
+    }
     let mc: ModelEntry = registry
-        .find(model_id)
+        .find(&model_id)
         .cloned()
-        .ok_or_else(|| error_response(400, &format!("model not found: {model_id}")))?;
+        .ok_or_else(|| {
+            let avail = pool.available_models_list();
+            if avail.is_empty() {
+                error_response(400, &format!("model not found: {model_id}"))
+            } else {
+                error_response(400, &format!("model not found: {model_id} (实测可用: {})", avail.join(", ")))
+            }
+        })?;
     if pool.is_empty() {
         return Err(error_response(503, "FREEBUFF_TOKEN not configured (run `freebuff-rs login`)"));
     }

@@ -25,6 +25,8 @@ pub struct Health {
 }
 
 pub struct Pool {
+    /// 实测可用模型集 (balance/probe 从 rateLimitsByModel 汇总)
+    pub available_models: std::sync::Mutex<std::collections::BTreeSet<String>>,
     pub accounts: std::sync::Mutex<Vec<Account>>,
     pub idx: AtomicUsize,
     /// token -> cooldown until (ms)
@@ -76,6 +78,37 @@ pub fn parse_accounts(tokens_env: &str, accounts_json: &str) -> Vec<Account> {
 }
 
 impl Pool {
+    /// 记录实测可用模型 (取并集)
+    pub fn note_available_models(&self, models: &[String]) {
+        let mut set = self.available_models.lock().unwrap();
+        for m in models {
+            if !m.is_empty() {
+                set.insert(m.clone());
+            }
+        }
+    }
+
+    /// 当前实测可用模型 (空 = 未知, 调用方回退完整目录)
+    pub fn available_models_list(&self) -> Vec<String> {
+        self.available_models.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// 降级选择: 同家族优先, 否则可用集第一个; 无可用集返回 None
+    pub fn fallback_model(&self, requested: &str) -> Option<String> {
+        let avail = self.available_models_list();
+        if avail.is_empty() {
+            return None;
+        }
+        let fam = requested.split('/').next().unwrap_or("").to_string();
+        if let Some(m) = avail.iter().find(|m| m.starts_with(&format!("{fam}/"))) {
+            return Some(m.clone());
+        }
+        if avail.iter().any(|m| m == requested) {
+            return None; // 请求的本来就可用
+        }
+        avail.first().cloned()
+    }
+
     /// 账号来源 ("freebuff"|"codebuff"), 未知默认 codebuff
     pub fn source_of(&self, token: &str) -> &'static str {
         let accs = self.accounts.lock().unwrap();
@@ -87,6 +120,7 @@ impl Pool {
 
     pub fn new(tokens_env: &str, accounts_json: &str) -> Self {
         Self {
+            available_models: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             accounts: std::sync::Mutex::new(parse_accounts(tokens_env, accounts_json)),
             idx: AtomicUsize::new(0),
             cooldowns: Mutex::new(HashMap::new()),
