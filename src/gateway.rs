@@ -209,6 +209,13 @@ pub async fn execute_chat(
                             Err(e) => { last_err = e; break; }
                         }
                     }
+                    // 上游 VPN 检测点名 → 该出站 IP 立即判死 (否则每号每请求都撞一次)
+                    if text.contains("VPN or proxy") || text.contains("VPN or proxy traffic") {
+                        eprintln!("[chat] VPN detection hit -> 出站 IP 判死");
+                        pool.cooldown(&token, 30 * 60 * 1000);
+                        pool.note_account_exhausted(&token);
+                        continue;
+                    }
                     pool.cooldown(&token, parse_cooldown(&text, status));
                     last_err = format!("upstream error ({status}): {}", &text[..text.len().min(300)]);
                     break;
