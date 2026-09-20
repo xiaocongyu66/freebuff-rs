@@ -106,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/responses", post(responses_api))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .with_state(Arc::new(state))
@@ -260,6 +261,131 @@ async fn chat_completions(
         model, pt, ct, started.elapsed().as_millis()
     ));
     Json(protocol::oa_text_response(&model, &content, &reasoning, pt, ct, finish)).into_response()
+}
+
+/// OpenAI Responses API (Codex CLI 等新客户端) — 转内部 chat 再转回
+async fn responses_api(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> Response {
+    if let Err(r) = check_auth(&state, &headers) {
+        return r;
+    }
+    let Ok(rb) = serde_json::from_str::<Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, "invalid json").into_response();
+    };
+    let started = std::time::Instant::now();
+    // input: string | [{role, content:[{type:"input_text"|"input_image", ...}]} | {role, content: string}]
+    let mut messages: Vec<Value> = Vec::new();
+    if let Some(instr) = rb["instructions"].as_str() {
+        if !instr.is_empty() {
+            messages.push(json!({"role": "system", "content": instr}));
+        }
+    }
+    let push_content = |m: &mut Vec<Value>, role: &str, content: Value| {
+        m.push(json!({"role": role, "content": content}));
+    };
+    match &rb["input"] {
+        Value::String(txt) => push_content(&mut messages, "user", json!(txt)),
+        Value::Array(items) => {
+            for it in items {
+                let role = it["role"].as_str().unwrap_or("user").to_string();
+                match &it["content"] {
+                    Value::String(txt) => push_content(&mut messages, &role, json!(txt)),
+                    Value::Array(parts) => {
+                        // Responses parts → OpenAI content parts
+                        let mut out_parts: Vec<Value> = Vec::new();
+                        for p in parts {
+                            let ty = p["type"].as_str().unwrap_or("");
+                            match ty {
+                                "input_text" | "output_text" | "text" => {
+                                    out_parts.push(json!({"type": "text", "text": p["text"]}));
+                                }
+                                "input_image" | "image_url" => {
+                                    let url = p["image_url"].as_str()
+                                        .or_else(|| p["url"].as_str())
+                                        .unwrap_or("");
+                                    if !url.is_empty() {
+                                        out_parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        push_content(&mut messages, &role, Value::Array(out_parts));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    if messages.is_empty() {
+        return (StatusCode::BAD_REQUEST, "input required").into_response();
+    }
+    let model_id = rb["model"].as_str().unwrap_or(state.registry.default_model()).to_string();
+    let is_stream = rb["stream"].as_bool().unwrap_or(false);
+    let guard = match state.sem.acquire(false).await {
+        Ok(g) => g,
+        Err(_) => return (StatusCode::TOO_MANY_REQUESTS, "concurrency busy").into_response(),
+    };
+    let _ = guard;
+    let chat_params = json!({"model": model_id, "messages": messages, "stream": true});
+    let result = gateway::execute_chat(&state.pool, &state.registry, &chat_params, &model_id).await;
+    let exec = match result {
+        Ok(e) => e.response,
+        Err(r) => return r,
+    };
+    let (parts, body_bytes) = exec.into_parts();
+    let bytes = match axum::body::to_bytes(body_bytes, 32 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("stream read: {e}")).into_response(),
+    };
+    let (content, reasoning, _finish, model_upstream, usage) =
+        crate::protocol::aggregate_stream_text(&String::from_utf8_lossy(&bytes));
+    let pt = usage.as_ref().and_then(|u| u["prompt_tokens"].as_u64()).unwrap_or(1);
+    let ct = usage.as_ref().and_then(|u| u["completion_tokens"].as_u64()).unwrap_or(1);
+    state.logbus.push(&format!("[responses] {} {}+{} tok / {}ms", model_upstream, pt, ct, started.elapsed().as_millis()));
+
+    let rid = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    let mut out_items = vec![json!({
+        "type": "message", "id": format!("msg_{}", &rid[5..]), "role": "assistant", "status": "completed",
+        "content": [{"type": "output_text", "text": content, "annotations": []}],
+    })];
+    if !reasoning.is_empty() {
+        out_items.insert(0, json!({
+            "type": "reasoning", "id": format!("rs_{}", &rid[5..]),
+            "summary": [{"type": "summary_text", "text": reasoning}],
+        }));
+    }
+    let resp = json!({
+        "id": rid, "object": "response", "created_at": crate::protocol::now_secs(),
+        "status": "completed", "model": model_upstream,
+        "output": out_items,
+        "parallel_tool_calls": true,
+        "usage": {"input_tokens": pt, "output_tokens": ct, "total_tokens": pt + ct},
+        "metadata": {},
+    });
+    if is_stream {
+        // Responses SSE: created → delta → completed (Codex 解析 output_text.delta)
+        let rid2 = resp["id"].as_str().unwrap_or("").to_string();
+        let text_part = content.clone();
+        let sse_body = {
+            let mut s = String::new();
+            s.push_str(&format!("event: response.created\ndata: {}\n\n", json!({"type": "response.created", "response": {"id": rid2, "status": "in_progress"}})));
+            s.push_str(&format!("event: response.output_text.delta\ndata: {}\n\n", json!({"type": "response.output_text.delta", "delta": text_part})));
+            s.push_str(&format!("event: response.completed\ndata: {}\n\n", json!({"type": "response.completed", "response": resp})));
+            s
+        };
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            sse_body,
+        )
+            .into_response();
+    }
+    Json(resp).into_response()
 }
 
 async fn anthropic_messages(
