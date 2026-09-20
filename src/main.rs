@@ -181,7 +181,41 @@ async fn serve() {
     }
     let app = server::router(state).merge(admin::router(admin_state).await);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // 优雅退出 (Rust 惯用): SIGINT/SIGTERM → 停止收新请求 → 清理全部活跃 session → 退出
+    let pool_sd = pool.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(pool_sd))
+        .await
+        .unwrap();
+    eprintln!("[freebuff-rs] bye");
+}
+
+/// 等待 Ctrl-C / SIGTERM; 触发后 DELETE 上游全部活跃 session (不留挂尸会话等过期)
+async fn shutdown_signal(pool: Arc<Pool>) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => { s.recv().await; }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    eprintln!("[freebuff-rs] shutting down, cleaning sessions…");
+    let items = pool.all_sessions();
+    let n = items.len();
+    let base = upstream::base_for("");
+    for (token, _model, inst) in items {
+        let _ = upstream::delete_upstream_session(&base, &token, &inst).await;
+    }
+    eprintln!("[freebuff-rs] {n} session(s) cleaned");
 }
 
 async fn chat_cli(args: &[String]) {
