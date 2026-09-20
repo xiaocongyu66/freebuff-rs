@@ -126,6 +126,12 @@ pub async fn up_base(
     if body.is_some() {
         req = req.header("content-type", "application/json");
     }
+    // 默认伪装官方 SDK 特征 (调用方可覆写)
+    let has_ua = extra_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent"));
+    if !has_ua {
+        req = req.header("user-agent", SDK_USER_AGENT);
+        req = req.header("accept", SDK_ACCEPT);
+    }
     for (k, v) in extra_headers {
         req = req.header(*k, v);
     }
@@ -141,6 +147,10 @@ pub async fn up_base(
         let mut hdrs: Vec<(&str, String)> = extra_headers.iter().map(|(k, v)| (*k, v.clone())).collect();
         if body.is_some() {
             hdrs.push(("content-type", "application/json".into()));
+        }
+        if !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")) {
+            hdrs.push(("user-agent", SDK_USER_AGENT.into()));
+            hdrs.push(("accept", SDK_ACCEPT.into()));
         }
         match crate::tunnel_client::request(
             ob, host, method.as_str(), path, token, &hdrs, body,
@@ -177,6 +187,28 @@ async fn http_body_to_string(inc: Incoming) -> String {
 
 
 /// 稳定设备指纹: token 派生, 同一账号永远一致 (官方 enhanced- 前缀)。
+/// 每请求 client_id: 13 位 base-36 — 对齐官方 SDK `Math.random().toString(36).substring(2,15)` 形状
+/// (同步 Quorinex/Freebuff2API 的 Stealth Request Handling; 真实官方 SDK 每请求随机)
+pub fn sdk_client_id() -> String {
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = String::with_capacity(13);
+    // 轻熵: 时间纳秒 + 地址熵 (无 getrandom 依赖)
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E3779B97F4A7C15)
+        ^ (&out as *const _ as u64);
+    for _ in 0..13 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        out.push(ALPHABET[((seed >> 33) % 36) as usize] as char);
+    }
+    out
+}
+
+/// 官方 SDK 形态 UA (客户端版本对真实世界是稳定的 — 不每请求变)
+pub const SDK_USER_AGENT: &str = "ai-sdk/openai-compatible/1.0.25/codebuff";
+pub const SDK_ACCEPT: &str = "application/json, text/event-stream";
+
 pub fn stable_fingerprint(token: &str) -> String {
     let s = format!("freebuff-fp-v2:{token}");
     let mut h1: u32 = 0x811c_9dc5;
