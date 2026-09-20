@@ -197,10 +197,14 @@ fn behavior_cache() -> &'static Mutex<HashMap<String, Instant>> {
 }
 
 fn behavior_due(key: &str) -> bool {
+    behavior_due_within(key, 30 * 60)
+}
+
+fn behavior_due_within(key: &str, secs: u64) -> bool {
     let mut m = behavior_cache().lock().unwrap();
     let now = Instant::now();
     match m.get(key) {
-        Some(t) if now.duration_since(*t) < Duration::from_secs(30 * 60) => false,
+        Some(t) if now.duration_since(*t) < Duration::from_secs(secs) => false,
         _ => {
             m.insert(key.to_string(), now);
             true
@@ -209,7 +213,25 @@ fn behavior_due(key: &str) -> bool {
 }
 
 pub async fn run_normal_client_behavior(base: &str, token: &str) {
-    if behavior_due(&format!("ads:{token}")) {
+    // glm 的 Reward 池 base=0 全靠广告计数 — 高频看广告; 其余模型维持 30 分钟节流
+    let need_reward = true; // 由调用方按 session_model 决定
+    run_normal_client_behavior_freq(base, token, need_reward).await
+}
+
+pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_model: bool) {
+    if reward_model {
+        run_ads_round(base, token, 3 * 60).await;
+    } else if behavior_due(&format!("ads:{token}")) {
+        run_ads_round(base, token, 30 * 60).await;
+    }
+    if behavior_due(&format!("usage:{token}")) {
+        let body = json!({"fingerprintId": stable_fingerprint(token)});
+        let _ = up_at(base, "POST", "/api/v1/usage", token, Some(&body), &[], Duration::from_secs(6)).await;
+    }
+}
+
+async fn run_ads_round(base: &str, token: &str, throttle_secs: u64) {
+    if behavior_due_within(&format!("ads:{token}"), throttle_secs) {
         let body = json!({
             "provider": "gravity",
             "sessionId": uuid::Uuid::new_v4().to_string(),
@@ -224,6 +246,9 @@ pub async fn run_normal_client_behavior(base: &str, token: &str) {
                 .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
             if ad.status == 200 {
                 if let Some(imp) = imp_url {
+                    // 真实拉取广告资源 (服务端可能校验 impUrl 被请求过)
+                    let _ = up_at(base, "GET", &imp_url_path(&imp), token, None, &[],
+                        Duration::from_secs(8)).await;
                     let ib = json!({"impUrl": imp, "mode": "free"});
                     let _ = up_at(base, "POST", "/api/v1/ads/impression", token, Some(&ib),
                         &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6)).await;
@@ -231,9 +256,18 @@ pub async fn run_normal_client_behavior(base: &str, token: &str) {
             }
         }
     }
-    if behavior_due(&format!("usage:{token}")) {
-        let body = json!({"fingerprintId": stable_fingerprint(token)});
-        let _ = up_at(base, "POST", "/api/v1/usage", token, Some(&body), &[], Duration::from_secs(6)).await;
+}
+
+/// impUrl 可能是完整 URL — 提取 path; 纯 path 则原样
+fn imp_url_path(url: &str) -> String {
+    if let Some(i) = url.find("://") {
+        let rest = &url[i + 3..];
+        match rest.find('/') {
+            Some(j) => rest[j..].to_string(),
+            None => "/".into(),
+        }
+    } else {
+        url.to_string()
     }
 }
 
@@ -308,7 +342,8 @@ pub async fn ensure_session(
     cached: &Option<Session>,
     force_create: bool,
 ) -> Result<Session, String> {
-    run_normal_client_behavior(base, token).await;
+    let is_reward_model = session_model.contains("glm");
+    run_normal_client_behavior_freq(base, token, is_reward_model).await;
     if !force_create && is_usable_session(cached) {
         return Ok(cached.clone().unwrap());
     }
