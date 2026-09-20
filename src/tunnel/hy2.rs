@@ -95,11 +95,8 @@ pub struct Hy2Io {
     read_fut: Option<Pin<Box<dyn std::future::Future<Output = (Result<Vec<u8>, String>, quinn::RecvStream)> + Send>>>,
 }
 
-impl Drop for Hy2Io {
-    fn drop(&mut self) {
-        self.conn.close(0u32.into(), b"done");
-    }
-}
+// 流结束不再 close 整个连接! conn 是池内共享的, close 会杀死池 (每次请求完关一次=池失效=反复握手=抖动真凶)
+// bi-stream 的 tx/rx Drop 时自然关闭单条流, 连接生命周期由池的空闲过期管理
 
 impl tokio::io::AsyncWrite for Hy2Io {
     fn poll_write(
