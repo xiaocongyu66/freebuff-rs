@@ -36,8 +36,8 @@ pub fn normalize_messages(messages: &Value) -> Value {
         let role = if role == "developer" { "system" } else { role };
         if role == "system" {
             has_system = true;
-            item["role"] = json!("system");
-            item["cache_control"] = json!({"type": "ephemeral"});
+            item.insert("role".into(), json!("system"));
+            item.insert("cache_control".into(), json!({"type": "ephemeral"}));
             match item.get_mut("content") {
                 Some(Value::String(text)) => {
                     if !text.starts_with(upstream::BUFFY) {
@@ -59,7 +59,7 @@ pub fn normalize_messages(messages: &Value) -> Value {
                 _ => {}
             }
         } else {
-            item["role"] = json!(role);
+            item.insert("role".into(), json!(role));
         }
         out.push(Value::Object(item));
     }
