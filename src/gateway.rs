@@ -74,6 +74,15 @@ fn parse_cooldown(text: &str, status: u16) -> i64 {
 }
 
 fn is_stale_session(status: u16, text: &str) -> bool {
+    // Freebuff2apic v1.8.9 门语义: 精确错误码 (递归匹配嵌套结构)
+    let codes: &[&str] = &["waiting_room_required", "session_expired", "session_superseded", "session_model_mismatch"];
+    let expect: &[u16] = &[428, 410, 409, 409];
+    for (i, c) in codes.iter().enumerate() {
+        if text.contains(c) && status == expect[i] {
+            return true;
+        }
+    }
+    // 宽松兜底 (原有语义)
     status == 428 || status == 409 || text.contains("waiting_room_required")
         || text.contains("session_superseded")
 }
