@@ -214,14 +214,24 @@ pub const SDK_USER_AGENT: &str = "ai-sdk/openai-compatible/1.0.25/codebuff";
 pub const SDK_ACCEPT: &str = "application/json, text/event-stream";
 
 pub fn stable_fingerprint(token: &str) -> String {
-    let s = format!("freebuff-fp-v2:{token}");
+    // 官方 enhanced 指纹 = sha256(JSON 硬件面) base64url (~43 字符, 'enhanced-' 前缀)
+    // 我们用同长度同字符集伪面: token 稳定 → 同账号永远同一指纹 (官方语义), 形状与真实 CLI 无差别
+    let s = format!("freebuff-hw-v2:{token}");
     let mut h1: u32 = 0x811c_9dc5;
     let mut h2: u32 = 0x0100_0193;
     for c in s.encode_utf16() {
         h1 = (h1 ^ c as u32).wrapping_mul(0x0100_0193);
         h2 = (h2 ^ c as u32).wrapping_mul(0x85eb_ca6b);
     }
-    format!("enhanced-{h1:08x}{h2:08x}")
+    // base64url 字符表 (官方 digest('base64url') 输出形状)
+    const B64U: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(44);
+    let mut mix = ((h1 as u64) << 32) | h2 as u64;
+    for _ in 0..43 {
+        out.push(B64U[(mix & 63) as usize] as char);
+        mix = mix.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_right(7) ^ (mix >> 13);
+    }
+    format!("enhanced-{out}")
 }
 
 // ---------------------------------------------------------------------------
@@ -330,28 +340,41 @@ pub fn mark_exhausted(token: &str) {
     m.insert(key, Instant::now());
 }
 
+/// auction 时的浏览器 UA (官方: impression 的 userAgent 必须= auction 时 UA, 否则 Gravity bot 过滤判死)
+fn ad_browser_ua() -> &'static str {
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+}
+
 async fn watch_one_ad(base: &str, token: &str) {
     let body = json!({
         "provider": "gravity",
         "sessionId": uuid::Uuid::new_v4().to_string(),
         "surface": "waiting_room",
         "device": {"os": "macos", "timezone": "Asia/Shanghai", "locale": "zh-CN"},
-        "userAgent": "Freebuff-CLI/0.0.138",
+        "userAgent": ad_browser_ua(),
     });
     if let Ok(ad) = up_at(base, "POST", "/api/v1/ads", token, Some(&body),
-        &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6),
+        &[("User-Agent", "Freebuff-CLI/0.0.180".into())], Duration::from_secs(6),
     ).await {
         let imp_url = ad.json()
             .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
         if ad.status == 200 {
             if let Some(imp) = imp_url {
-                // impUrl 是第三方 CDN 完整 URL (非 codebuff API path) — 用 reqwest 直取, 不进 API 通道
-                if imp.starts_with("http") {
-                    let _ = http().get(&imp).timeout(Duration::from_secs(8)).send().await;
-                }
-                let ib = json!({"impUrl": imp, "mode": "free"});
+                // 官方新版 impression: POST /ads/impression { impUrl, mode, userAgent(浏览器UA), os, clientEventId } + x-client-event-id 头
+                let ev = uuid::Uuid::new_v4().to_string();
+                let ib = json!({
+                    "impUrl": imp,
+                    "mode": "lite",
+                    "userAgent": ad_browser_ua(),
+                    "os": "macos",
+                    "clientEventId": ev,
+                });
                 let _ = up_at(base, "POST", "/api/v1/ads/impression", token, Some(&ib),
-                    &[("User-Agent", "Freebuff-CLI/0.0.138".into())], Duration::from_secs(6)).await;
+                    &[
+                        ("User-Agent", "Freebuff-CLI/0.0.180".into()),
+                        ("x-client-event-id", ev.into()),
+                    ], Duration::from_secs(6),
+                ).await;
             }
         }
     }
