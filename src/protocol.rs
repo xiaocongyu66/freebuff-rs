@@ -19,6 +19,18 @@ const UPSTREAM_KEYS: &[&str] = &[
     "stop",
     "response_format",
     "seed",
+    // 官方 UPSTREAM_KEYS 全表 (worker.js) — 以下为补齐项:
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "metadata",
+    "modalities",
+    "stream_options",
+    "store",
+    "service_tier",
+    "top_logprobs",
+    "user",
 ];
 
 /// system 消息注入官方 Buffy 前缀 (服务器 hasFreebuffRootSystemPromptOpening 字节级校验)。
