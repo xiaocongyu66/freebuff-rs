@@ -137,7 +137,7 @@ pub async fn up_base(
         req = req.header("accept", SDK_ACCEPT);
     }
     for (k, v) in extra_headers.iter() {
-        req = req.header(*k, *v);
+        req = req.header(*k, (*v).clone());
     }
     if let Some(b) = body {
         req = req.body(b.to_string());
