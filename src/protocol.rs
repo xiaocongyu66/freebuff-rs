@@ -134,11 +134,14 @@ pub fn build_payload(
         );
         u.to_string()
     };
-    // 双 CLI 差异化 (SPEC.md): freebuff=agentMode FREE 恒定+cost_mode free; codebuff=正常订阅语义
+    // 官方 AGENT_MODE_TO_COST_MODE 全表 (cli/src/utils/constants.ts):
+    //   DEFAULT:normal / LITE: IS_FREEBUFF?'free':'lite' / MAX:max / PLAN:normal
+    // freebuff CLI 默认 agentMode=LITE (chat-store.ts:208) → cost_mode=free
+    // codebuff CLI 走 LITE 语义 → cost_mode=lite
     let (cost_mode, has_fb_inst) = if source == "freebuff" {
         ("free", true)
     } else {
-        ("credits", false)
+        ("lite", false)
     };
     let mut meta = json!({
         "trace_session_id": trace_sid,
