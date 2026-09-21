@@ -120,11 +120,24 @@ pub fn build_payload(
             }
         }
     }
+    // trace_session_id 会话稳定 (官方 clientSessionId 语义: 进程级稳定, 非每请求新)
+    // 派生自 client_fingerprint → 同账号永远同会话串; 每请求新 uuid = 自动化特征
+    let trace_sid = {
+        let mut h: u32 = 0x811c_9dc5;
+        for c in client_fingerprint.encode_utf16() {
+            h = (h ^ c as u32).wrapping_mul(0x0100_0193);
+        }
+        let u = uuid::Uuid::from_u64_pair(
+            ((h as u64) << 32) | 0x4f4e_5f53_4944_4531,
+            0x9E37_79B9_7F4A_7C15 ^ (h as u64),
+        );
+        u.to_string()
+    };
     payload.insert(
         "codebuff_metadata".to_string(),
         json!({
             "freebuff_instance_id": sess.instance_id,
-            "trace_session_id": uuid::Uuid::new_v4().to_string(),
+            "trace_session_id": trace_sid,
             "run_id": run_id,
             "client_id": client_fingerprint,
             "cost_mode": "free",

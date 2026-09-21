@@ -522,6 +522,9 @@ pub async fn ensure_session(
         &[
             ("x-freebuff-model", session_model.to_string()),
             ("x-freebuff-instance-id", inst_id.clone()),
+            // 官方 session-api.ts: x-fb-timezone(调度偏好) + x-fb-first-tab-discount(首屏折扣标记) — 缺头=非真实 CLI
+            ("x-fb-timezone", "Asia/Shanghai".into()),
+            ("x-fb-first-tab-discount", "1".into()),
         ],
         Duration::from_secs(10),
     )
@@ -543,6 +546,8 @@ pub async fn ensure_session(
             &[
                 ("x-freebuff-model", session_model.to_string()),
                 ("x-freebuff-instance-id", inst_id.clone()),
+                ("x-fb-timezone", "Asia/Shanghai".into()),
+                ("x-fb-first-tab-discount", "1".into()),
             ],
             Duration::from_secs(10),
         ).await?;
