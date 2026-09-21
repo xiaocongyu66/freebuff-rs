@@ -128,7 +128,7 @@ pub async fn execute_chat(
 
         // session (含缓存钉住)
         let cached = pool.cached_session(&token, session_model);
-        let mut sess = match upstream::ensure_session(base, &token, session_model, &cached, false).await {
+        let mut sess = match upstream::ensure_session_src(base, &token, session_model, &cached, false, pool.source_of(&token)).await {
             Ok(s) => {
                 // 撞额度: (token, model) 冷却至重置 — pick 自动切下一账号
                 for (m, until) in &s.exhausted_models {
@@ -206,14 +206,14 @@ pub async fn execute_chat(
                         }
                         eprintln!("[chat] 400 -> drop session + recreate + retry");
                         pool.drop_session(&token, session_model);
-                        match upstream::ensure_session(base, &token, session_model, &None, true).await {
+                        match upstream::ensure_session_src(base, &token, session_model, &None, true, pool.source_of(&token)).await {
                             Ok(s2) => { sess = s2; continue; }
                             Err(e) => { last_err = e; break; }
                         }
                     }
                     if is_stale_session(status, &text) && attempt == 1 {
                         pool.drop_session(&token, session_model);
-                        match upstream::ensure_session(base, &token, session_model, &None, true).await {
+                        match upstream::ensure_session_src(base, &token, session_model, &None, true, pool.source_of(&token)).await {
                             Ok(s) => { sess = s; continue; }
                             Err(e) => { last_err = e; break; }
                         }

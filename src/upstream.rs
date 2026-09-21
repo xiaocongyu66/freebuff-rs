@@ -514,13 +514,25 @@ pub async fn ensure_session(
     cached: &Option<Session>,
     force_create: bool,
 ) -> Result<Session, String> {
+    ensure_session_src(base, token, session_model, cached, force_create, "freebuff").await
+}
+
+pub async fn ensure_session_src(
+    base: &str,
+    token: &str,
+    session_model: &str,
+    cached: &Option<Session>,
+    force_create: bool,
+    source: &str,
+) -> Result<Session, String> {
     // 官方 worker 语义: 广告/签到在 session 创建前发起, 但失败静默跳过不阻塞聊天 → 异步 fire-and-forget
     // 智能触发: 只在 (a) glm reward 池 (countsAdmissions 需看广告攒次数) 或 (b) 探测性维持(30-40min 稀疏) 时看
     let base_s = base.to_string();
     let token_s = token.to_string();
     let is_reward_model = session_model.contains("glm");
+    let source_s = source.to_string();
     tokio::spawn(async move {
-        run_normal_client_behavior_freq(&base_s, &token_s, is_reward_model).await;
+        run_normal_client_behavior_src(&base_s, &token_s, is_reward_model, &source_s).await;
     });
     if !force_create && is_usable_session(cached) {
         return Ok(cached.clone().unwrap());
