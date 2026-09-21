@@ -149,11 +149,16 @@ pub async fn up_base(
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .trim_end_matches('/');
-        let mut hdrs: Vec<(&str, String)> = extra_headers.iter().map(|(k, v)| (*k, v.clone())).collect();
+        let no_ua_tunnel = extra_headers.iter().any(|(k, _)| *k == "x-no-ua");
+        let mut hdrs: Vec<(&str, String)> = extra_headers
+            .iter()
+            .filter(|(k, _)| *k != "x-no-ua")
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
         if body.is_some() {
             hdrs.push(("content-type", "application/json".into()));
         }
-        if !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")) {
+        if !no_ua_tunnel && !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")) {
             hdrs.push(("user-agent", SDK_USER_AGENT.into()));
             hdrs.push(("accept", SDK_ACCEPT.into()));
         }
