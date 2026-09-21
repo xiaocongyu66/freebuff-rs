@@ -127,13 +127,17 @@ pub async fn up_base(
         req = req.header("content-type", "application/json");
     }
     // 默认伪装官方 SDK 特征 (调用方可覆写)
+    let no_ua = extra_headers.iter().any(|(k, _)| *k == "x-no-ua");
+    let extra_headers: Vec<&(&str, String)> = extra_headers.iter().filter(|(k, _)| *k != "x-no-ua").collect();
     let has_ua = extra_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent"));
-    if !has_ua {
+    if no_ua {
+        // 桌面版协议: session 端点用客户端默认 UA (不手动设)
+    } else if !has_ua {
         req = req.header("user-agent", SDK_USER_AGENT);
         req = req.header("accept", SDK_ACCEPT);
     }
-    for (k, v) in extra_headers {
-        req = req.header(*k, v);
+    for (k, v) in extra_headers.iter() {
+        req = req.header(*k, *v);
     }
     if let Some(b) = body {
         req = req.body(b.to_string());
@@ -504,10 +508,12 @@ pub async fn delete_upstream_session(base: &str, token: &str, instance_id: &str)
 /// GET 当前 session; 返回 (session|None, UpResp)
 pub async fn get_session(base: &str, token: &str, instance_hint: Option<&str>) -> Result<UpResp, String> {
     // 官方 session-api.ts: headers base 块(Authorization+x-fb-timezone+first-tab-discount)对全部 method 生效
+    // 桌面版协议: session 端点不手动设 UA (fetch 默认) — 剥离 SDK UA
     let mut headers: Vec<(&str, String)> = vec![
         ("x-freebuff-include-unused-rate-limits", "1".to_string()),
         ("x-fb-timezone", "Asia/Shanghai".into()),
         ("x-fb-first-tab-discount", "1".into()),
+        ("x-no-ua", "1".into()),
     ];
     if let Some(h) = instance_hint {
         headers.push(("x-freebuff-instance-id", h.to_string()));
