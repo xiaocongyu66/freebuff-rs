@@ -162,7 +162,7 @@ pub async fn execute_chat(
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let payload = protocol::build_payload(params, &mc, &sess, &run, &upstream::sdk_client_id());
+            let payload = protocol::build_payload(params, &mc, &sess, &run, &upstream::sdk_client_id(), pool.source_of(&token));
             let resp = upstream::chat_completions(base, &token, &sess.instance_id, &payload).await;
             match resp {
                 Ok(upstream::ChatUpResp { status: 200, body: Some(stream), .. }) => {

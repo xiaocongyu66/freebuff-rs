@@ -79,6 +79,7 @@ pub fn build_payload(
     sess: &Session,
     run_id: &str,
     client_fingerprint: &str,
+    source: &str,
 ) -> Value {
     let mut payload = Map::new();
     for k in UPSTREAM_KEYS {
@@ -133,16 +134,22 @@ pub fn build_payload(
         );
         u.to_string()
     };
-    payload.insert(
-        "codebuff_metadata".to_string(),
-        json!({
-            "freebuff_instance_id": sess.instance_id,
-            "trace_session_id": trace_sid,
-            "run_id": run_id,
-            "client_id": client_fingerprint,
-            "cost_mode": "free",
-        }),
-    );
+    // 双 CLI 差异化 (SPEC.md): freebuff=agentMode FREE 恒定+cost_mode free; codebuff=正常订阅语义
+    let (cost_mode, has_fb_inst) = if source == "freebuff" {
+        ("free", true)
+    } else {
+        ("credits", false)
+    };
+    let mut meta = json!({
+        "trace_session_id": trace_sid,
+        "run_id": run_id,
+        "client_id": client_fingerprint,
+        "cost_mode": cost_mode,
+    });
+    if has_fb_inst {
+        meta["freebuff_instance_id"] = json!(sess.instance_id);
+    }
+    payload.insert("codebuff_metadata".to_string(), meta);
     Value::Object(payload)
 }
 

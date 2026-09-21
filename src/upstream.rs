@@ -289,6 +289,10 @@ pub async fn run_normal_client_behavior(base: &str, token: &str) {
 }
 
 pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_model: bool) {
+    run_normal_client_behavior_src(base, token, reward_model, "freebuff").await
+}
+
+pub async fn run_normal_client_behavior_src(base: &str, token: &str, reward_model: bool, source: &str) {
     let ads_key = format!("ads:{token}");
     // 耗尽熔断: 上游 429 后 30 分钟内不发任何广告/签到 (空转烧池 + 滥用信号)
     {
@@ -301,9 +305,9 @@ pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_mod
     }
     if reward_model {
         // glm Reward: 2-4 分钟窗口内随机 — 统一间隔是蜜罐签名 (同刻同模式 = 批量特征)
-        run_ads_round(base, token, 2 * 60, 4 * 60).await;
+        run_ads_round(base, token, 2 * 60, 4 * 60, source).await;
     } else if behavior_due_jitter(&ads_key, 20 * 60, 40 * 60) {
-        run_ads_round(base, token, 20 * 60, 40 * 60).await;
+        run_ads_round(base, token, 20 * 60, 40 * 60, source).await;
     }
     // 签到: entitlementBreakdown.streak 加每日额度 (worker.js 同款; 失败静默)
     if behavior_due_within(&format!("streak:{token}"), 12 * 3600) {
@@ -316,7 +320,7 @@ pub async fn run_normal_client_behavior_freq(base: &str, token: &str, reward_mod
     }
 }
 
-async fn run_ads_round(base: &str, token: &str, lo: u64, hi: u64) {
+async fn run_ads_round(base: &str, token: &str, lo: u64, hi: u64, source: &str) {
     let ads_key = format!("ads:{token}");
     if !behavior_due_jitter(&ads_key, lo, hi) {
         return;
@@ -329,7 +333,7 @@ async fn run_ads_round(base: &str, token: &str, lo: u64, hi: u64) {
             let gap = jitter_u64(&format!("{ads_key}:{i}"), 2, 6);
             tokio::time::sleep(Duration::from_secs(gap)).await;
         }
-        watch_one_ad(base, token).await;
+        watch_one_ad(base, token, source).await;
     }
 }
 
@@ -345,7 +349,23 @@ fn ad_browser_ua() -> &'static str {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 }
 
-async fn watch_one_ad(base: &str, token: &str) {
+/// 双 CLI UA: 按 source 选品牌 (CodebuffAI/codebuff: IS_FREEBUFF ? 'Freebuff-CLI' : 'Codebuff-CLI')
+pub fn cli_product_ua(source: &str) -> String {
+    if source == "freebuff" {
+        format!("Freebuff-CLI/{}", CLI_VERSION)
+    } else {
+        format!("Codebuff-CLI/{}", CODEBUFF_CLI_VERSION)
+    }
+}
+
+/// codebuff CLI 版本 (npm: codebuff@1.0.688)
+pub const CODEBUFF_CLI_VERSION: &str = "1.0.688";
+
+/// freebuff CLI 版本 (本机官方 CLI freebuff@0.0.180)
+pub const CLI_VERSION: &str = "0.0.180";
+
+async fn watch_one_ad(base: &str, token: &str, source: &str) {
+    let product_ua = cli_product_ua(source);
     let body = json!({
         "provider": "gravity",
         "sessionId": uuid::Uuid::new_v4().to_string(),
@@ -354,7 +374,7 @@ async fn watch_one_ad(base: &str, token: &str) {
         "userAgent": ad_browser_ua(),
     });
     if let Ok(ad) = up_at(base, "POST", "/api/v1/ads", token, Some(&body),
-        &[("User-Agent", "Freebuff-CLI/0.0.180".into())], Duration::from_secs(6),
+        &[("User-Agent", product_ua.into())], Duration::from_secs(6),
     ).await {
         let imp_url = ad.json()
             .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
@@ -371,7 +391,7 @@ async fn watch_one_ad(base: &str, token: &str) {
                 });
                 let _ = up_at(base, "POST", "/api/v1/ads/impression", token, Some(&ib),
                     &[
-                        ("User-Agent", "Freebuff-CLI/0.0.180".into()),
+                        ("User-Agent", product_ua.clone()),
                         ("x-client-event-id", ev.into()),
                     ], Duration::from_secs(6),
                 ).await;
