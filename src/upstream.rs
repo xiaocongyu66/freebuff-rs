@@ -486,11 +486,16 @@ pub fn parse_session(data: &Value, requested_model: &str) -> Option<Session> {
 }
 
 pub async fn delete_upstream_session(base: &str, token: &str, instance_id: &str) {
+    // 官方 session-api.ts: DELETE 也带 base 头(x-fb-timezone/first-tab) + instance 头
     let _ = up_at(base, "DELETE",
         &format!("/api/v1/freebuff/session/{instance_id}"),
         token,
         None,
-        &[("x-freebuff-instance-id", instance_id.to_string())],
+        &[
+            ("x-fb-timezone", "Asia/Shanghai".into()),
+            ("x-fb-first-tab-discount", "1".into()),
+            ("x-freebuff-instance-id", instance_id.to_string()),
+        ],
         Duration::from_secs(10),
     )
     .await;
@@ -498,8 +503,12 @@ pub async fn delete_upstream_session(base: &str, token: &str, instance_id: &str)
 
 /// GET 当前 session; 返回 (session|None, UpResp)
 pub async fn get_session(base: &str, token: &str, instance_hint: Option<&str>) -> Result<UpResp, String> {
-    let mut headers: Vec<(&str, String)> =
-        vec![("x-freebuff-include-unused-rate-limits", "1".to_string())];
+    // 官方 session-api.ts: headers base 块(Authorization+x-fb-timezone+first-tab-discount)对全部 method 生效
+    let mut headers: Vec<(&str, String)> = vec![
+        ("x-freebuff-include-unused-rate-limits", "1".to_string()),
+        ("x-fb-timezone", "Asia/Shanghai".into()),
+        ("x-fb-first-tab-discount", "1".into()),
+    ];
     if let Some(h) = instance_hint {
         headers.push(("x-freebuff-instance-id", h.to_string()));
     }
