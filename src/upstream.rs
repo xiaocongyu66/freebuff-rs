@@ -374,7 +374,7 @@ async fn watch_one_ad(base: &str, token: &str, source: &str) {
         "userAgent": ad_browser_ua(),
     });
     if let Ok(ad) = up_at(base, "POST", "/api/v1/ads", token, Some(&body),
-        &[("User-Agent", product_ua.into())], Duration::from_secs(6),
+        &[("User-Agent", product_ua.clone())], Duration::from_secs(6),
     ).await {
         let imp_url = ad.json()
             .and_then(|d| d["ads"][0]["impUrl"].as_str().map(String::from));
