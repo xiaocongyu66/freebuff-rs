@@ -106,6 +106,18 @@ fn embedded_response(path: &str) -> Option<Response> {
 
 /// SPA 静态托管: 外挂 admin-ui/ 优先 (热替换), 否则内嵌产物; 未命中返回 index.html (客户端路由)。
 async fn admin_ui_fallback(uri: axum::http::Uri) -> Response {
+    // API 路径永不给 HTML (客户端把 200 HTML 当假响应 → "html-fake-200"): 
+    // 覆盖带/不带 /v1 前缀的常见端点, 返回 404 JSON
+    let p = uri.path();
+    const API_PREFIXES: &[&str] = &[
+        "/v1/", "/chat/completions", "/completions", "/embeddings",
+        "/messages", "/responses", "/models", "/count_tokens",
+    ];
+    if API_PREFIXES.iter().any(|pre| p == *pre || p.starts_with(pre)) {
+        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({
+            "error": {"message": format!("unknown api path: {p}"), "type": "invalid_request_error"}
+        }))).into_response();
+    }
     let path = uri.path().trim_start_matches('/');
     let safe = path.replace("..", "");
     let asset = if safe.is_empty() { "index.html" } else { &safe };
